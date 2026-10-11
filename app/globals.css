@@ -1,26 +1,98 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-obsidian: #0b0e14;
+  --color-obsidian-soft: #10141d;
+  --color-obsidian-line: #1b2130;
+  --color-neon-orange: #ff6b00;
+  --color-neon-cyan: #00f0ff;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-marquee: marquee 38s linear infinite;
+  --animate-pulse-glow: pulseGlow 2.4s ease-in-out infinite;
+  --animate-float: float 4s ease-in-out infinite;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
   }
 }
 
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+:root {
+  --background: #0b0e14;
+  --foreground: #f5f7fa;
+  color-scheme: dark;
+}
+
+html,
 body {
-  background: var(--background);
+  height: 100%;
+}
+
+body {
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+/* Deep obsidian backdrop with subtle radial glowing gradients */
+.app-bg {
+  background:
+    radial-gradient(60% 42% at 12% -6%, rgba(255, 107, 0, 0.14), transparent 60%),
+    radial-gradient(55% 40% at 100% 4%, rgba(0, 240, 255, 0.12), transparent 58%),
+    radial-gradient(70% 50% at 50% 108%, rgba(255, 107, 0, 0.08), transparent 60%),
+    #0b0e14;
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+::selection {
+  background: rgba(255, 107, 0, 0.35);
 }
