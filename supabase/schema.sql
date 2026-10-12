@@ -29,6 +29,7 @@ create table if not exists public.profiles (
   referral_count integer     not null default 0,
   is_premium     boolean     not null default false,
   is_banned      boolean     not null default false,
+  is_admin       boolean     not null default false,
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
@@ -426,3 +427,262 @@ from (values
   ('Duet the Questify payout reel','Post a duet showcasing your daily Questify earnings.','tiktok','DUET','https://tiktok.com/@questify/video/payout',900,0.20,'hard',90)
 ) as v(title,description,platform,action_label,action_url,reward_coins,reward_usdt,difficulty,duration_seconds)
 where not exists (select 1 from public.tasks t where t.title = v.title);
+
+-- ----------------------------------------------------------------------------
+-- ADMIN UTILITIES
+-- ----------------------------------------------------------------------------
+
+-- Check if a user is admin (by profile id)
+create or replace function public.is_admin_user(p_user uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_admin boolean;
+begin
+  select is_admin into v_admin from public.profiles where id = p_user;
+  return coalesce(v_admin, false);
+end;
+$$;
+
+revoke all on function public.is_admin_user(uuid) from public;
+grant execute on function public.is_admin_user(uuid) to service_role;
+
+-- ----------------------------------------------------------------------------
+-- ADMIN AUDIT LOGS
+-- ----------------------------------------------------------------------------
+create table if not exists public.admin_actions (
+  id           uuid primary key default gen_random_uuid(),
+  admin_id     uuid references public.profiles (id) on delete set null,
+  action       text not null,
+  target_type  text not null,
+  target_id    text not null,
+  details      jsonb,
+  ip_address   text,
+  user_agent   text,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists idx_admin_actions_admin   on public.admin_actions (admin_id, created_at desc);
+create index if not exists idx_admin_actions_target  on public.admin_actions (target_type, target_id, created_at desc);
+
+alter table public.admin_actions enable row level security;
+
+drop policy if exists admin_actions_read on public.admin_actions;
+create policy admin_actions_read on public.admin_actions for select
+  using (false); -- only via service role/admin functions
+
+-- Extend tasks with verification configuration
+alter table public.tasks add column if not exists verification_type text;
+alter table public.tasks add column if not exists verification_target text;
+alter table public.tasks add column if not exists verification_rules jsonb default '{}'::jsonb;
+alter table public.tasks add column if not exists updated_at timestamptz not null default now();
+
+drop trigger if exists trg_tasks_updated_at on public.tasks;
+create trigger trg_tasks_updated_at
+  before update on public.tasks
+  for each row execute procedure public.touch_updated_at();
+
+-- ----------------------------------------------------------------------------
+-- ADMIN FUNCTIONS
+-- ----------------------------------------------------------------------------
+
+-- Admin: create/update task
+create or replace function public.admin_upsert_task(
+  p_admin uuid,
+  p_task_id uuid default null,
+  p_title text default null,
+  p_description text default null,
+  p_platform text default null,
+  p_action_label text default null,
+  p_action_url text default null,
+  p_reward_coins integer default null,
+  p_reward_usdt numeric(18,6) default null,
+  p_difficulty text default null,
+  p_duration_seconds integer default null,
+  p_is_active boolean default null,
+  p_verification_type text default null,
+  p_verification_target text default null,
+  p_verification_rules jsonb default null,
+  p_max_completions integer default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin_ok boolean;
+  v_task public.tasks;
+  v_id uuid;
+begin
+  v_admin_ok := public.is_admin_user(p_admin);
+  if not v_admin_ok then raise exception 'not authorized' using errcode = '42501'; end if;
+
+  if p_task_id is null then
+    insert into public.tasks (
+      title, description, platform, action_label, action_url,
+      reward_coins, reward_usdt, difficulty, duration_seconds, is_active,
+      verification_type, verification_target, verification_rules, max_completions
+    ) values (
+      p_title, p_description, p_platform, p_action_label, p_action_url,
+      p_reward_coins, p_reward_usdt, p_difficulty, p_duration_seconds,
+      coalesce(p_is_active, true),
+      p_verification_type, p_verification_target, coalesce(p_verification_rules, '{}'::jsonb),
+      p_max_completions
+    ) returning * into v_task;
+    v_id := v_task.id;
+  else
+    update public.tasks set
+      title = coalesce(p_title, title),
+      description = coalesce(p_description, description),
+      platform = coalesce(p_platform, platform),
+      action_label = coalesce(p_action_label, action_label),
+      action_url = coalesce(p_action_url, action_url),
+      reward_coins = coalesce(p_reward_coins, reward_coins),
+      reward_usdt = coalesce(p_reward_usdt, reward_usdt),
+      difficulty = coalesce(p_difficulty, difficulty),
+      duration_seconds = coalesce(p_duration_seconds, duration_seconds),
+      is_active = coalesce(p_is_active, is_active),
+      verification_type = coalesce(p_verification_type, verification_type),
+      verification_target = coalesce(p_verification_target, verification_target),
+      verification_rules = coalesce(p_verification_rules, verification_rules),
+      max_completions = coalesce(p_max_completions, max_completions),
+      updated_at = now()
+    where id = p_task_id
+    returning * into v_task;
+    v_id := v_task.id;
+  end if;
+
+  insert into public.admin_actions (admin_id, action, target_type, target_id, details)
+  values (p_admin, 'upsert_task', 'task', v_id::text, jsonb_build_object('title', v_task.title));
+
+  return to_jsonb(v_task);
+end;
+$$;
+
+revoke all on function public.admin_upsert_task(uuid,uuid,text,text,text,text,text,integer,numeric,text,integer,boolean,text,text,jsonb,integer) from public;
+grant execute on function public.admin_upsert_task(uuid,uuid,text,text,text,text,text,integer,numeric,text,integer,boolean,text,text,jsonb,integer) to service_role;
+
+-- Admin: delete task
+create or replace function public.admin_delete_task(
+  p_admin uuid,
+  p_task_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_admin_ok boolean;
+begin
+  v_admin_ok := public.is_admin_user(p_admin);
+  if not v_admin_ok then raise exception 'not authorized' using errcode = '42501'; end if;
+  delete from public.tasks where id = p_task_id;
+  insert into public.admin_actions (admin_id, action, target_type, target_id)
+  values (p_admin, 'delete_task', 'task', p_task_id::text);
+  return true;
+end;
+$$;
+
+revoke all on function public.admin_delete_task(uuid,uuid) from public;
+grant execute on function public.admin_delete_task(uuid,uuid) to service_role;
+
+-- Admin: update withdrawal status
+create or replace function public.admin_update_withdrawal(
+  p_admin uuid,
+  p_withdrawal_id uuid,
+  p_status text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin_ok boolean;
+  v_w public.withdrawals;
+  v_new_status text;
+  v_prof public.profiles;
+begin
+  v_admin_ok := public.is_admin_user(p_admin);
+  if not v_admin_ok then raise exception 'not authorized' using errcode = '42501'; end if;
+  v_new_status := lower(p_status);
+  if v_new_status not in ('pending','processing','paid','rejected') then
+    raise exception 'invalid status';
+  end if;
+
+  select * into v_w from public.withdrawals where id = p_withdrawal_id for update;
+  if not found then raise exception 'withdrawal not found'; end if;
+
+  -- If rejecting, refund balance (we already debited on request)
+  if v_new_status = 'rejected' and v_w.status <> 'rejected' then
+    update public.profiles set usdt_balance = usdt_balance + v_w.amount_usdt where id = v_w.user_id;
+  end if;
+
+  update public.withdrawals
+  set status = v_new_status,
+      processed_at = case when v_new_status in ('paid','rejected') then now() else processed_at end
+  where id = p_withdrawal_id
+  returning * into v_w;
+
+  insert into public.admin_actions (admin_id, action, target_type, target_id, details)
+  values (p_admin, 'update_withdrawal', 'withdrawal', p_withdrawal_id::text, jsonb_build_object('status', v_new_status));
+
+  return to_jsonb(v_w);
+end;
+$$;
+
+revoke all on function public.admin_update_withdrawal(uuid,uuid,text) from public;
+grant execute on function public.admin_update_withdrawal(uuid,uuid,text) to service_role;
+
+-- Admin: ban/unban or update user
+create or replace function public.admin_update_user(
+  p_admin uuid,
+  p_user_id uuid,
+  p_is_banned boolean default null,
+  p_is_admin boolean default null,
+  p_trust_score integer default null,
+  p_coins bigint default null,
+  p_usdt_balance numeric(18,6) default null,
+  p_referral_count integer default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin_ok boolean;
+  v_prof public.profiles;
+begin
+  v_admin_ok := public.is_admin_user(p_admin);
+  if not v_admin_ok then raise exception 'not authorized' using errcode = '42501'; end if;
+
+  update public.profiles
+  set
+    is_banned = coalesce(p_is_banned, is_banned),
+    is_admin = coalesce(p_is_admin, is_admin),
+    trust_score = coalesce(p_trust_score, trust_score),
+    coins = coalesce(p_coins, coins),
+    usdt_balance = coalesce(p_usdt_balance, usdt_balance),
+    referral_count = coalesce(p_referral_count, referral_count),
+    updated_at = now()
+  where id = p_user_id
+  returning * into v_prof;
+
+  if not found then raise exception 'user not found'; end if;
+
+  insert into public.admin_actions (admin_id, action, target_type, target_id, details)
+  values (p_admin, 'update_user', 'user', p_user_id::text, jsonb_build_object('is_banned', v_prof.is_banned, 'is_admin', v_prof.is_admin));
+
+  return to_jsonb(v_prof);
+end;
+$$;
+
+revoke all on function public.admin_update_user(uuid,uuid,boolean,boolean,integer,bigint,numeric,integer) from public;
+grant execute on function public.admin_update_user(uuid,uuid,boolean,boolean,integer,bigint,numeric,integer) to service_role;
+
+-- Grant basic read to service role where needed (we use service role anyway)
+grant select on public.admin_actions to service_role;
