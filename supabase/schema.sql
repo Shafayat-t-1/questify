@@ -187,13 +187,24 @@ alter table public.daily_checkins enable row level security;
 alter table public.withdrawals    enable row level security;
 alter table public.referrals      enable row level security;
 
--- profiles: public leaderboard read, self update
+-- profiles: self read only. The public leaderboard is served by the
+-- `public_profiles` view below, which projects only non-sensitive columns and
+-- never leaks telegram_id / is_admin / language / ban state.
 drop policy if exists profiles_read   on public.profiles;
-create policy profiles_read on public.profiles for select using (true);
+create policy profiles_read on public.profiles for select using (auth.uid() = id);
 
 drop policy if exists profiles_update on public.profiles;
 create policy profiles_update on public.profiles for update
   using (auth.uid() = id) with check (auth.uid() = id);
+
+-- Public, column-limited leaderboard projection. Runs as the view owner so it
+-- bypasses RLS on the base table while exposing only safe columns.
+drop view if exists public.public_profiles;
+create view public.public_profiles as
+  select id, username, photo_url, level, usdt_balance, referral_count
+  from public.profiles
+  where is_banned = false;
+grant select on public.public_profiles to anon, authenticated;
 
 -- wallets: owner only
 drop policy if exists wallets_rw on public.wallets;

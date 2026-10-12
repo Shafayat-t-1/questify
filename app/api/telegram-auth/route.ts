@@ -1,62 +1,18 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { signSession } from "@/lib/session";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase";
+import {
+  parseTelegramUser,
+  verifyTelegramInitData,
+  type TelegramUser,
+} from "@/lib/telegram-auth";
 import type { Profile, Wallet } from "@/lib/types";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const MAX_AUTH_AGE_SECONDS = 60 * 60 * 24;
-
-interface TelegramUser {
-  id: number;
-  first_name?: string;
-  last_name?: string;
-  username?: string;
-  language_code?: string;
-  photo_url?: string;
-  is_premium?: boolean;
-}
 
 interface AuthBody {
   initData?: string;
   referralCode?: string;
-}
-
-/** Verify Telegram `initData` signature (HMAC-SHA256, standard WebApp algo). */
-function validateInitData(initData: string, botToken: string): boolean {
-  const params = new URLSearchParams(initData);
-  const hash = params.get("hash");
-  if (!hash) return false;
-  params.delete("hash");
-
-  const dataCheckString = [...params.entries()]
-    .map(([k, v]) => `${k}=${v}`)
-    .sort()
-    .join("\n");
-
-  const secretKey = createHmac("sha256", "WebAppData").update(botToken).digest();
-  const computed = createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
-
-  const a = Buffer.from(computed, "utf8");
-  const b = Buffer.from(hash, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
-function parseUser(initData: string): TelegramUser | null {
-  const raw = new URLSearchParams(initData).get("user");
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as TelegramUser;
-  } catch {
-    return null;
-  }
-}
-
-function authDateValid(initData: string): boolean {
-  const authDate = Number(new URLSearchParams(initData).get("auth_date"));
-  if (!Number.isFinite(authDate) || authDate <= 0) return false;
-  return Date.now() / 1000 - authDate <= MAX_AUTH_AGE_SECONDS;
 }
 
 const DEMO_COINS = 3450; // Lv.4 Newbie — matches the premium demo header
@@ -109,23 +65,21 @@ export async function POST(request: Request) {
 
   const initData = body.initData ?? "";
 
-  const startParamFromInit = (() => {
-    try {
-      const p = new URLSearchParams(initData);
-      return p.get("start_param");
-    } catch {
-      return null;
-    }
-  })();
-  const user = parseUser(initData);
+  if (!initData) {
+    return NextResponse.json({ ok: false, error: "missing_init_data" }, { status: 400 });
+  }
 
-  // Telemetry-free path: with no bot token we accept Telegram-provided identity
-  // in development so the Mini App boots without a backend.
-  const verified = BOT_TOKEN ? validateInitData(initData, BOT_TOKEN) : false;
+  // When a bot token is configured (production), the HMAC signature and
+  // auth_date freshness MUST validate. Without a token (local dev) we fall back
+  // to the Telegram-provided identity so the Mini App can boot offline.
+  const verified = BOT_TOKEN ? verifyTelegramInitData(initData, BOT_TOKEN) : null;
 
-  if (BOT_TOKEN && (!verified || !authDateValid(initData))) {
+  if (BOT_TOKEN && !verified) {
     return NextResponse.json({ ok: false, error: "invalid_init_data" }, { status: 401 });
   }
+
+  const startParamFromInit = verified?.startParam ?? null;
+  const user: TelegramUser | null = verified?.user ?? parseTelegramUser(initData);
 
   if (!user || !Number.isFinite(user.id)) {
     return NextResponse.json({ ok: false, error: "missing_user" }, { status: 400 });

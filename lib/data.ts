@@ -1,5 +1,5 @@
 import { supabase } from "./supabase";
-import { getSessionToken } from "./session-client";
+import { authHeaders, getSessionToken } from "./session-client";
 import {
   buildSeedActivity,
   SEED_LEADERBOARD,
@@ -60,10 +60,11 @@ export async function fetchUserTasks(userId: string): Promise<UserTask[]> {
 
 export async function fetchLeaderboard(limit = 10): Promise<LeaderboardEntry[]> {
   return safe(async () => {
+    // Read from the column-limited public view, never the raw profiles table
+    // (which is locked down to self-only under RLS).
     const { data, error } = await supabase!
-      .from("profiles")
+      .from("public_profiles")
       .select("id, username, photo_url, level, usdt_balance, referral_count")
-      .eq("is_banned", false)
       .order("usdt_balance", { ascending: false })
       .limit(limit);
     if (error) throw error;
@@ -191,7 +192,7 @@ async function postReward<T>(body: Record<string, unknown>, fallback: T): Promis
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+        ...authHeaders(),
       },
       body: JSON.stringify(body),
     });

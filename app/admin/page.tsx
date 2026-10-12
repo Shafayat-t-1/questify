@@ -1,7 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getSessionToken } from "@/lib/session-client";
+import { useCallback, useEffect, useState } from "react";
+import {
+  authHeaders,
+  getSessionToken,
+  setInitData,
+  setSessionToken,
+} from "@/lib/session-client";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { formatUsdt } from "@/lib/utils";
 
@@ -22,57 +27,117 @@ interface AdminData {
   actions: Array<Record<string, unknown>>;
 }
 
+type AuthState = "checking" | "ready" | "outside-telegram" | "error";
+
+async function fetchAdminData(): Promise<AdminData> {
+  const res = await fetch("/api/admin", { headers: { ...authHeaders() } });
+  const json = (await res.json()) as { ok?: boolean; data?: AdminData; error?: string };
+  if (!res.ok || !json.ok) throw new Error(json.error || "failed");
+  return json.data as AdminData;
+}
+
+async function adminAction(action: string, params: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch("/api/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ action, ...params }),
+  });
+  const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: unknown; error?: string };
+  if (!res.ok || !json.ok) throw new Error(json.error || "request_failed");
+  return json.data;
+}
+
 export default function AdminPage() {
   const [data, setData] = useState<AdminData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const token = getSessionToken();
+  const [authState, setAuthState] = useState<AuthState>("checking");
   const [tab, setTab] = useState<"tasks" | "withdrawals" | "users" | "stats">("stats");
 
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      setData(await fetchAdminData());
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "failed");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Bootstrap a verified Telegram session from the Mini App `initData`, then
+  // load the first page of admin data. All state writes happen after an await so
+  // nothing renders in a synchronous effect tick.
   useEffect(() => {
-    if (!token) return;
-    let isMounted = true;
-    const fetchData = async () => {
-      setLoading(true);
+    let active = true;
+    (async () => {
       try {
-        const res = await fetch("/api/admin", {
-          headers: { Authorization: `Bearer ${token}` },
+        if (!isSupabaseConfigured) {
+          if (active) setAuthState("error");
+          return;
+        }
+        if (!getSessionToken()) {
+          const initData = window.Telegram?.WebApp?.initData ?? "";
+          if (!initData) {
+            if (active) setAuthState("outside-telegram");
+            return;
+          }
+          const res = await fetch("/api/telegram-auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ initData }),
+          });
+          const json = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+          if (!res.ok || !json.ok || !json.token) throw new Error(json.error || "auth_failed");
+          setSessionToken(json.token);
+          setInitData(initData);
+        }
+
+        const first = await fetchAdminData().catch((e: unknown) => {
+          throw e instanceof Error ? e : new Error("failed");
         });
-        const json = await res.json();
-        if (!res.ok || !json.ok) throw new Error(json.error || "failed");
-        if (isMounted) {
-          setData(json.data);
+        if (active) {
+          setData(first);
           setError(null);
+          setLoading(false);
+          setAuthState("ready");
         }
       } catch (e: unknown) {
-        if (isMounted) {
+        if (active) {
           setError(e instanceof Error ? e.message : "failed");
-        }
-      } finally {
-        if (isMounted) {
           setLoading(false);
+          setAuthState("error");
         }
       }
-    };
-    fetchData();
+    })();
     return () => {
-      isMounted = false;
+      active = false;
     };
-  }, [token]);
+  }, []);
 
   if (!isSupabaseConfigured) {
+    return <AdminNotice>Admin requires Supabase configuration.</AdminNotice>;
+  }
+
+  if (authState === "checking") {
+    return <AdminNotice>Verifying Telegram session…</AdminNotice>;
+  }
+
+  if (authState === "outside-telegram") {
     return (
-      <div className="min-h-dvh flex items-center justify-center p-4 text-white">
-        <div className="rounded-lg border border-white/10 p-6">Admin requires Supabase configuration.</div>
-      </div>
+      <AdminNotice>
+        Please open the Questify Mini App inside Telegram to access the admin panel.
+      </AdminNotice>
     );
   }
 
-  if (!token) {
+  if (authState === "error") {
     return (
-      <div className="min-h-dvh flex items-center justify-center p-4 text-white">
-        <div className="rounded-lg border border-white/10 p-6">Please authenticate via Telegram Mini App.</div>
-      </div>
+      <AdminNotice>
+        Could not verify your Telegram session. Reopen Questify in Telegram.
+        {error ? <div className="mt-2 text-xs text-red-400">{error}</div> : null}
+      </AdminNotice>
     );
   }
 
@@ -84,10 +149,10 @@ export default function AdminPage() {
       {data && (
         <div>
           <div className="flex gap-2 mb-4 flex-wrap">
-            {["stats", "tasks", "withdrawals", "users"].map((t) => (
+            {(["stats", "tasks", "withdrawals", "users"] as const).map((t) => (
               <button
                 key={t}
-                onClick={() => setTab(t as "tasks" | "withdrawals" | "users" | "stats")}
+                onClick={() => setTab(t)}
                 className={`px-3 py-1 rounded border ${tab === t ? "border-orange-500" : "border-white/20"}`}
               >
                 {t.toUpperCase()}
@@ -104,11 +169,19 @@ export default function AdminPage() {
               <StatCard label="Platform Liquidity" value={`${formatUsdt(data.stats.platformLiquidity)} USDT`} />
             </div>
           )}
-          {tab === "tasks" && <TasksManager tasks={data.tasks} onRefresh={() => {}} token={token} />}
-          {tab === "withdrawals" && <WithdrawalsManager withdrawals={data.withdrawals} onRefresh={() => {}} token={token} />}
-          {tab === "users" && <UsersManager users={data.users} onRefresh={() => {}} token={token} />}
+          {tab === "tasks" && <TasksManager tasks={data.tasks} onRefresh={refresh} />}
+          {tab === "withdrawals" && <WithdrawalsManager withdrawals={data.withdrawals} onRefresh={refresh} />}
+          {tab === "users" && <UsersManager users={data.users} onRefresh={refresh} />}
         </div>
       )}
+    </div>
+  );
+}
+
+function AdminNotice({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-dvh flex items-center justify-center p-4 text-white">
+      <div className="max-w-md rounded-lg border border-white/10 p-6 text-center">{children}</div>
     </div>
   );
 }
@@ -122,27 +195,31 @@ function StatCard({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-function TasksManager({ tasks, onRefresh, token }: { tasks: Array<Record<string, unknown>>; onRefresh: () => void; token: string }) {
+function TasksManager({
+  tasks,
+  onRefresh,
+}: {
+  tasks: Array<Record<string, unknown>>;
+  onRefresh: () => void;
+}) {
   const [form, setForm] = useState<Record<string, unknown>>({ is_active: true });
   const [editing, setEditing] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const submit = async () => {
-    await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: "upsert_task", p_task_id: editing || null, ...form }),
-    });
-    setEditing(null);
-    setForm({ is_active: true });
-    onRefresh();
+    setBusy(true);
+    try {
+      await adminAction("upsert_task", { p_task_id: editing || null, ...form });
+      setEditing(null);
+      setForm({ is_active: true });
+      onRefresh();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const del = async (id: string) => {
-    await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: "delete_task", taskId: id }),
-    });
+    await adminAction("delete_task", { taskId: id });
     onRefresh();
   };
 
@@ -158,7 +235,7 @@ function TasksManager({ tasks, onRefresh, token }: { tasks: Array<Record<string,
           <input className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1" type="number" placeholder="Coins" value={(form.reward_coins as number) || 0} onChange={(e) => setForm({ ...form, reward_coins: Number(e.target.value) })} />
           <input className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1" type="number" step="0.01" placeholder="USDT" value={(form.reward_usdt as number) || 0} onChange={(e) => setForm({ ...form, reward_usdt: Number(e.target.value) })} />
         </div>
-        <button className="px-3 py-1 rounded bg-orange-600" onClick={submit}>{editing ? "Update" : "Add"}</button>
+        <button disabled={busy} className="px-3 py-1 rounded bg-orange-600 disabled:opacity-50" onClick={submit}>{editing ? "Update" : "Add"}</button>
       </div>
       <div className="space-y-2">
         {tasks.map((t: Record<string, unknown>) => (
@@ -178,13 +255,15 @@ function TasksManager({ tasks, onRefresh, token }: { tasks: Array<Record<string,
   );
 }
 
-function WithdrawalsManager({ withdrawals, onRefresh, token }: { withdrawals: Array<Record<string, unknown>>; onRefresh: () => void; token: string }) {
+function WithdrawalsManager({
+  withdrawals,
+  onRefresh,
+}: {
+  withdrawals: Array<Record<string, unknown>>;
+  onRefresh: () => void;
+}) {
   const update = async (id: string, status: string) => {
-    await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: "update_withdrawal", withdrawalId: id, status }),
-    });
+    await adminAction("update_withdrawal", { withdrawalId: id, status });
     onRefresh();
   };
 
@@ -211,13 +290,15 @@ function WithdrawalsManager({ withdrawals, onRefresh, token }: { withdrawals: Ar
   );
 }
 
-function UsersManager({ users, onRefresh, token }: { users: Array<Record<string, unknown>>; onRefresh: () => void; token: string }) {
+function UsersManager({
+  users,
+  onRefresh,
+}: {
+  users: Array<Record<string, unknown>>;
+  onRefresh: () => void;
+}) {
   const update = async (id: string, patch: Record<string, unknown>) => {
-    await fetch("/api/admin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: "update_user", userId: id, ...patch }),
-    });
+    await adminAction("update_user", { userId: id, ...patch });
     onRefresh();
   };
 

@@ -1,12 +1,19 @@
 import { NextResponse } from "next/server";
-import { bearerToken, verifySessionToken } from "@/lib/session";
+import { authenticateRequest } from "@/lib/api-auth";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import {
+  isNetwork,
+  isUuid,
+  isValidAddress,
+  isValidAmount,
+  isValidReferralCode,
+} from "@/lib/validation";
 
 interface RewardsBody {
   action?: "claim_task" | "claim_checkin" | "withdraw" | "apply_referral" | "save_wallet";
   taskId?: string;
   amount?: number;
-  network?: "BEP20" | "TON";
+  network?: string;
   address?: string;
   code?: string;
   wallet?: { usdt_bep20?: string | null; ton_address?: string | null };
@@ -17,14 +24,15 @@ function fail(error: string, status: number) {
 }
 
 /**
- * Authenticated mutation endpoint. Verifies the Questify session token, then
- * runs the authoritative SECURITY DEFINER reward functions with the service
- * role (passing the verified user id explicitly). This keeps all reward math
- * server-side and never exposes the service key to the browser.
+ * Authenticated mutation endpoint. Strictly verifies the Questify session token
+ * AND (in production) the Telegram `initData` HMAC signature, then runs the
+ * authoritative SECURITY DEFINER reward functions with the service role. All
+ * client input is validated before it reaches the database, and the verified
+ * user id is passed explicitly — the browser can never act as another user.
  */
 export async function POST(request: Request) {
-  const session = verifySessionToken(bearerToken(request));
-  if (!session) return fail("unauthorized", 401);
+  const auth = authenticateRequest(request);
+  if (!auth.ok) return auth.response;
 
   const admin = getSupabaseAdmin();
   if (!admin) return fail("not_configured", 503);
@@ -35,13 +43,14 @@ export async function POST(request: Request) {
   } catch {
     return fail("invalid_json", 400);
   }
+  if (!body || typeof body !== "object") return fail("invalid_body", 400);
 
-  const userId = session.sub;
+  const userId = auth.context.userId;
 
   try {
     switch (body.action) {
       case "claim_task": {
-        if (!body.taskId) return fail("missing_task", 400);
+        if (!isUuid(body.taskId)) return fail("invalid_task", 400);
         const { data, error } = await admin.rpc("claim_task", {
           p_task_id: body.taskId,
           p_user: userId,
@@ -59,13 +68,13 @@ export async function POST(request: Request) {
       }
 
       case "withdraw": {
-        if (!body.amount || !body.network || !body.address) {
-          return fail("missing_withdrawal_fields", 400);
-        }
+        if (!isValidAmount(body.amount)) return fail("invalid_amount", 400);
+        if (!isNetwork(body.network)) return fail("invalid_network", 400);
+        if (!isValidAddress(body.network, body.address)) return fail("invalid_address", 400);
         const { data, error } = await admin.rpc("request_withdrawal", {
           p_amount: body.amount,
           p_network: body.network,
-          p_address: body.address,
+          p_address: body.address.trim(),
           p_user: userId,
         });
         if (error) throw error;
@@ -73,7 +82,7 @@ export async function POST(request: Request) {
       }
 
       case "apply_referral": {
-        if (!body.code) return fail("missing_code", 400);
+        if (!isValidReferralCode(body.code)) return fail("invalid_code", 400);
         const { data, error } = await admin.rpc("apply_referral", {
           p_code: body.code,
           p_user: userId,
@@ -85,10 +94,22 @@ export async function POST(request: Request) {
       case "save_wallet": {
         const patch: Record<string, string | null> = {};
         if (body.wallet && "usdt_bep20" in body.wallet) {
-          patch.usdt_bep20 = body.wallet.usdt_bep20 ?? null;
+          const value = body.wallet.usdt_bep20;
+          if (value !== null && value !== undefined && value !== "") {
+            if (!isValidAddress("BEP20", value)) return fail("invalid_bep20_address", 400);
+            patch.usdt_bep20 = value.trim();
+          } else {
+            patch.usdt_bep20 = null;
+          }
         }
         if (body.wallet && "ton_address" in body.wallet) {
-          patch.ton_address = body.wallet.ton_address ?? null;
+          const value = body.wallet.ton_address;
+          if (value !== null && value !== undefined && value !== "") {
+            if (!isValidAddress("TON", value)) return fail("invalid_ton_address", 400);
+            patch.ton_address = value.trim();
+          } else {
+            patch.ton_address = null;
+          }
         }
         if (Object.keys(patch).length === 0) return fail("empty_wallet_patch", 400);
         const { error } = await admin

@@ -17,6 +17,7 @@ import {
   ToastLayer,
 } from "@/components/ui/Effects";
 import { BootSplash } from "@/components/ui/BootSplash";
+import { TelegramGate } from "@/components/TelegramGate";
 import { useTelegram } from "@/hooks/useTelegram";
 import type { Task } from "@/lib/types";
 
@@ -79,8 +80,10 @@ function Shell() {
 
 export function QuestifyApp() {
   return (
-    <QuestifyProvider>
-      <Shell />
-    </QuestifyProvider>
+    <TelegramGate>
+      <QuestifyProvider>
+        <Shell />
+      </QuestifyProvider>
+    </TelegramGate>
   );
 }

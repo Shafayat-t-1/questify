@@ -24,7 +24,7 @@ import {
   saveWallet,
 } from "@/lib/data";
 import { CHECKIN_SCHEDULE, EVENT_RAISED_USDT, SEED_LEADERBOARD } from "@/lib/seed";
-import { setSessionToken } from "@/lib/session-client";
+import { setInitData, setSessionToken } from "@/lib/session-client";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type {
   ActivityItem,
@@ -308,6 +308,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         if (!json.ok || !json.profile) throw new Error(json.error ?? "auth_failed");
 
         setSessionToken(json.token ?? null);
+        setInitData(initData || null);
 
         const storedProfile = isSupabaseConfigured
           ? json.profile
