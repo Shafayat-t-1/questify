@@ -429,6 +429,18 @@ from (values
 where not exists (select 1 from public.tasks t where t.title = v.title);
 
 -- ----------------------------------------------------------------------------
+-- IDEMPOTENT MIGRATIONS
+-- `create table if not exists` does NOT add new columns to tables that already
+-- exist, so explicitly add columns introduced after the initial schema. Safe to
+-- re-run against a live database that predates admin/verification support.
+-- ----------------------------------------------------------------------------
+alter table public.profiles add column if not exists is_admin          boolean      not null default false;
+alter table public.tasks    add column if not exists verification_type text;
+alter table public.tasks    add column if not exists verification_target text;
+alter table public.tasks    add column if not exists verification_rules  jsonb        default '{}'::jsonb;
+alter table public.tasks    add column if not exists updated_at          timestamptz  not null default now();
+
+-- ----------------------------------------------------------------------------
 -- ADMIN UTILITIES
 -- ----------------------------------------------------------------------------
 
