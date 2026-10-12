@@ -1,9 +1,25 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-const JWT_SECRET =
-  process.env.QUESTIFY_JWT_SECRET ??
-  process.env.SUPABASE_JWT_SECRET ??
-  "questify-dev-secret-change-me";
+/**
+ * Server-only session signing.
+ *
+ * The signing key is REQUIRED to be a high-entropy secret of at least 32 bytes.
+ * There is intentionally NO fallback: if `QUESTIFY_JWT_SECRET` is missing or too
+ * weak the server fails closed (minting throws, verification rejects every
+ * token) rather than silently signing with a guessable default.
+ *
+ * Generate one with:  openssl rand -hex 32
+ */
+const MIN_SECRET_BYTES = 32;
+
+/** Secrets that must never be accepted even if they somehow reach production. */
+const FORBIDDEN_SECRETS = new Set([
+  "questify-dev-secret-change-me",
+  "questify-local-dev-secret",
+  "changeme",
+  "secret",
+  "password",
+]);
 
 const DEFAULT_TTL_SECONDS = 60 * 60 * 24 * 7;
 
@@ -23,11 +39,29 @@ function decodeBase64url(input: string): string {
   return Buffer.from(input, "base64url").toString("utf8");
 }
 
+/**
+ * Read and validate the signing secret. Throws unless a sufficiently strong
+ * secret is configured. Called lazily so a misconfiguration fails at request
+ * time (denying traffic) instead of at build time.
+ */
+function requireSecret(): Buffer {
+  const raw = (process.env.QUESTIFY_JWT_SECRET ?? process.env.SUPABASE_JWT_SECRET ?? "").trim();
+  const bytes = Buffer.byteLength(raw, "utf8");
+  if (bytes < MIN_SECRET_BYTES || FORBIDDEN_SECRETS.has(raw)) {
+    throw new Error(
+      `QUESTIFY_JWT_SECRET must be a random secret of at least ${MIN_SECRET_BYTES} bytes ` +
+        `(configured length: ${bytes}). Generate one with: openssl rand -hex 32`,
+    );
+  }
+  return Buffer.from(raw, "utf8");
+}
+
 /** Mint a minimal HS256 session token (verified by `verifySessionToken`). */
 export function signSession(
   payload: SessionPayload,
   ttlSeconds: number = DEFAULT_TTL_SECONDS,
 ): string {
+  const secret = requireSecret();
   const now = Math.floor(Date.now() / 1000);
   const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const body = base64url(
@@ -37,9 +71,7 @@ export function signSession(
       exp: payload.exp ?? now + ttlSeconds,
     }),
   );
-  const sig = createHmac("sha256", JWT_SECRET)
-    .update(`${header}.${body}`)
-    .digest("base64url");
+  const sig = createHmac("sha256", secret).update(`${header}.${body}`).digest("base64url");
   return `${header}.${body}.${sig}`;
 }
 
@@ -48,25 +80,32 @@ export function verifySessionToken(
   token: string | null | undefined,
 ): SessionPayload | null {
   if (!token) return null;
+
+  let secret: Buffer;
+  try {
+    secret = requireSecret();
+  } catch {
+    // Misconfigured / weak secret ⇒ reject everything (fail closed).
+    return null;
+  }
+
   const parts = token.split(".");
   if (parts.length !== 3) return null;
 
   const [header, body, sig] = parts;
-  const expected = createHmac("sha256", JWT_SECRET)
-    .update(`${header}.${body}`)
-    .digest("base64url");
+  const expected = createHmac("sha256", secret).update(`${header}.${body}`).digest("base64url");
 
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
 
   try {
-    const payload = JSON.parse(decodeBase64url(body)) as SessionPayload;
-    if (!payload.sub) return null;
-    if (typeof payload.exp === "number" && payload.exp < Math.floor(Date.now() / 1000)) {
+    const decoded = JSON.parse(decodeBase64url(body)) as SessionPayload;
+    if (!decoded.sub) return null;
+    if (typeof decoded.exp === "number" && decoded.exp < Math.floor(Date.now() / 1000)) {
       return null;
     }
-    return payload;
+    return decoded;
   } catch {
     return null;
   }

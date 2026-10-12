@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { cn } from "@/lib/utils";
+import { cn, safeExternalUrl } from "@/lib/utils";
 
 interface AvatarProps {
   src?: string | null;
@@ -20,7 +20,8 @@ function initials(name?: string | null): string {
 
 export function Avatar({ src, name, size = 40, className, ring }: AvatarProps) {
   const [failed, setFailed] = useState(false);
-  const showImg = src && !failed;
+  const safeSrc = safeExternalUrl(src);
+  const showImg = Boolean(safeSrc) && !failed;
 
   return (
     <span
@@ -33,7 +34,7 @@ export function Avatar({ src, name, size = 40, className, ring }: AvatarProps) {
       {showImg ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={src as string}
+          src={safeSrc as string}
           alt={name ?? "avatar"}
           onError={() => setFailed(true)}
           className="h-full w-full object-cover"

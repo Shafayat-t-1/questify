@@ -5,7 +5,6 @@ import { ListChecks, Users, Zap } from "lucide-react";
 import { HomeHeader } from "@/components/home/HomeHeader";
 import { LiveTicker } from "@/components/home/LiveTicker";
 import { DailyCheckinCard } from "@/components/home/DailyCheckinCard";
-import { EventBanner } from "@/components/home/EventBanner";
 import { HotTasks } from "@/components/home/HotTasks";
 import { useQuestify } from "@/providers/QuestifyProvider";
 import { compactNumber } from "@/lib/utils";
@@ -32,7 +31,6 @@ export function HomeView({ onStartTask, onSeeAllTasks }: HomeViewProps) {
         <LiveTicker />
       </div>
       <DailyCheckinCard />
-      <EventBanner />
 
       <div className="mt-3.5 grid grid-cols-3 gap-2.5">
         {stats.map((s, i) => (

@@ -27,8 +27,9 @@ export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
 }
 
 function WithdrawForm({ onClose }: { onClose: () => void }) {
-  const { profile, wallet, actions } = useQuestify();
+  const { profile, wallet, actions, config } = useQuestify();
   const balance = profile?.usdt_balance ?? 0;
+  const minWithdrawal = config.minWithdrawalUsdt;
 
   const [network, setNetwork] = useState<Withdrawal["network"]>("BEP20");
   const [amount, setAmount] = useState("");
@@ -52,27 +53,32 @@ function WithdrawForm({ onClose }: { onClose: () => void }) {
       ? /^0x[a-fA-F0-9]{40}$/.test(address.trim())
       : address.trim().length >= 30;
   const canSubmit =
-    !submitting && numericAmount >= 1 && numericAmount <= balance && validAddress;
+    !submitting && numericAmount >= minWithdrawal && numericAmount <= balance && validAddress;
 
   const handleSubmit = async () => {
     setError(null);
-    if (numericAmount < 1) return setError("Minimum withdrawal is 1 USDT");
+    if (numericAmount < minWithdrawal) return setError(`Minimum withdrawal is ${minWithdrawal} USDT`);
     if (numericAmount > balance) return setError("Amount exceeds balance");
     if (!validAddress) return setError(`Enter a valid ${net.label} address`);
 
     setSubmitting(true);
-    const res = await actions.requestWithdrawal(numericAmount, network, address.trim());
-    setSubmitting(false);
-    if (res.ok) {
-      setDone(true);
-      actions.pushToast({
-        kind: "success",
-        title: "Withdrawal submitted",
-        message: `${formatUsdt(numericAmount)} USDT · ${network}`,
-        amountUsdt: numericAmount,
-      });
-    } else {
-      setError(res.message ?? "Withdrawal failed");
+    try {
+      const res = await actions.requestWithdrawal(numericAmount, network, address.trim());
+      if (res.ok) {
+        setDone(true);
+        actions.pushToast({
+          kind: "success",
+          title: "Withdrawal submitted",
+          message: `${formatUsdt(numericAmount)} USDT · ${network}`,
+          amountUsdt: numericAmount,
+        });
+      } else {
+        setError(res.message ?? "Withdrawal failed");
+      }
+    } catch {
+      setError("Withdrawal failed. Please try again.");
+    } finally {
+      setSubmitting(false);
     }
   };
 

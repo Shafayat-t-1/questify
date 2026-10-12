@@ -7,7 +7,7 @@ import { Modal } from "@/components/ui/Modal";
 import { PLATFORM_META } from "@/components/icons/brand";
 import { useQuestify } from "@/providers/QuestifyProvider";
 import { useTelegram } from "@/hooks/useTelegram";
-import { cn, formatCoins, formatUsdt } from "@/lib/utils";
+import { cn, formatCoins, formatUsdt, safeExternalUrl } from "@/lib/utils";
 import type { Task } from "@/lib/types";
 
 interface VerifyModalProps {
@@ -37,6 +37,7 @@ function VerifyBody({ task, onClose }: { task: Task; onClose: () => void }) {
   const completed = userTasks[task.id]?.status === "completed";
   const meta = PLATFORM_META[task.platform];
   const Icon = meta.Icon;
+  const actionUrl = safeExternalUrl(task.action_url);
 
   useEffect(() => {
     if (!opened || remaining <= 0) return;
@@ -60,26 +61,43 @@ function VerifyBody({ task, onClose }: { task: Task; onClose: () => void }) {
     : 100;
 
   const handleOpen = () => {
+    if (!actionUrl) {
+      actions.pushToast({
+        kind: "warning",
+        title: "Unavailable",
+        message: "This task has an invalid action link",
+      });
+      return;
+    }
     haptic("medium");
-    openLink(task.action_url);
+    openLink(actionUrl);
     setOpened(true);
     if (task.duration_seconds <= 0) setRemaining(0);
   };
 
   const handleClaim = async () => {
     setSubmitting(true);
-    const res = await actions.completeTask(task);
-    setSubmitting(false);
-    if (res.ok) {
+    try {
+      const res = await actions.completeTask(task);
+      if (res.ok) {
+        actions.pushToast({
+          kind: "success",
+          title: "Task verified",
+          message: `+${formatCoins(res.coins ?? 0)} coins · +${formatUsdt(res.usdt ?? 0)} USDT`,
+        });
+        haptic("heavy");
+        onClose();
+      } else {
+        actions.pushToast({ kind: "warning", title: "Cannot claim", message: res.message });
+      }
+    } catch {
       actions.pushToast({
-        kind: "success",
-        title: "Task verified",
-        message: `+${formatCoins(res.coins ?? 0)} coins · +${formatUsdt(res.usdt ?? 0)} USDT`,
+        kind: "error",
+        title: "Cannot claim",
+        message: "Please try again in a moment",
       });
-      haptic("heavy");
-      onClose();
-    } else {
-      actions.pushToast({ kind: "warning", title: "Cannot claim", message: res.message });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -129,7 +147,11 @@ function VerifyBody({ task, onClose }: { task: Task; onClose: () => void }) {
         {!completed && (
           <button
             onClick={handleOpen}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/[0.05] py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
+            disabled={!actionUrl}
+            className={cn(
+              "flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/[0.05] py-3 text-sm font-semibold text-white transition active:scale-[0.98]",
+              !actionUrl && "cursor-not-allowed opacity-50",
+            )}
           >
             <ExternalLink className="h-4 w-4" />
             {opened ? "Reopen action" : `Open ${meta.label} & Start`}

@@ -185,10 +185,11 @@ export function useTelegram(): UseTelegram {
   }, []);
 
   const openLink = useCallback((url: string) => {
-    if (!url) return;
+    // Only ever open absolute http(s) URLs — never javascript:/data:/tg: schemes.
+    if (!/^https?:\/\//i.test(url ?? "")) return;
     const tg = getWebApp();
     try {
-      if (tg && /^https?:\/\//.test(url)) {
+      if (tg) {
         tg.openLink(url, { try_instant_view: false });
       } else if (typeof window !== "undefined") {
         window.open(url, "_blank", "noopener,noreferrer");

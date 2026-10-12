@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { CalendarCheck, Check, Flame, Loader2, Sparkles } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { useQuestify } from "@/providers/QuestifyProvider";
-import { CHECKIN_SCHEDULE } from "@/lib/seed";
+import { CHECKIN_SCHEDULE } from "@/lib/checkin";
 import { cn, formatCoins } from "@/lib/utils";
 
 export function DailyCheckinCard() {
@@ -15,17 +15,26 @@ export function DailyCheckinCard() {
   const handleClaim = async () => {
     if (checkin.hasToday || claiming) return;
     setClaiming(true);
-    const res = await actions.claimCheckin();
-    if (res.ok) {
+    try {
+      const res = await actions.claimCheckin();
+      if (res.ok) {
+        actions.pushToast({
+          kind: "success",
+          title: `Day ${checkin.nextDay} claimed`,
+          message: `+${formatCoins(res.coins ?? 0)} Quest Coins`,
+        });
+      } else {
+        actions.pushToast({ kind: "warning", title: "Check-in", message: res.message });
+      }
+    } catch {
       actions.pushToast({
-        kind: "success",
-        title: `Day ${checkin.nextDay} claimed`,
-        message: `+${formatCoins(res.coins ?? 0)} Quest Coins`,
+        kind: "error",
+        title: "Check-in failed",
+        message: "Please try again in a moment",
       });
-    } else {
-      actions.pushToast({ kind: "warning", title: "Check-in", message: res.message });
+    } finally {
+      setClaiming(false);
     }
-    setTimeout(() => setClaiming(false), 500);
   };
 
   return (

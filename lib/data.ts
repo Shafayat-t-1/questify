@@ -15,10 +15,14 @@ import type {
 } from "./types";
 
 /**
- * Data access layer. Every function talks to Supabase when it is configured and
- * silently falls back to the bundled seed dataset otherwise. Mutations use
- * `SECURITY DEFINER` Postgres functions (see supabase/schema.sql) so reward
- * math is authoritative on the server.
+ * Data access layer.
+ *
+ * Public reads (tasks, leaderboard, payout ticker, runtime config) use the anon
+ * Supabase client under RLS. Everything user-scoped goes through authenticated
+ * Next.js routes (`/api/me`, `/api/rewards`) which execute with the service role:
+ * the browser never holds a Supabase Auth session, so `auth.uid()` is null and
+ * RLS would otherwise hide the caller's own rows. Mutations use
+ * `SECURITY DEFINER` Postgres functions so reward math is authoritative.
  */
 
 async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
@@ -26,7 +30,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    console.warn("[questify] supabase call failed, using fallback", err);
+    console.warn("[questify] supabase read failed", err);
     return fallback;
   }
 }
@@ -40,17 +44,6 @@ export async function fetchTasks(): Promise<Task[]> {
       .order("created_at", { ascending: false });
     if (error) throw error;
     return (data as Task[]) ?? [];
-  }, []);
-}
-
-export async function fetchUserTasks(userId: string): Promise<UserTask[]> {
-  return safe(async () => {
-    const { data, error } = await supabase!
-      .from("user_tasks")
-      .select("*")
-      .eq("user_id", userId);
-    if (error) throw error;
-    return (data as UserTask[]) ?? [];
   }, []);
 }
 
@@ -98,134 +91,6 @@ export async function fetchTicker(limit = 20): Promise<TickerEvent[]> {
   }, []);
 }
 
-export async function fetchActivity(userId: string): Promise<ActivityItem[]> {
-  return safe(async () => {
-    const [rewards, withdrawals] = await Promise.all([
-      supabase!
-        .from("user_tasks")
-        .select("id, reward_coins, reward_usdt, completed_at, tasks(title, platform)")
-        .eq("user_id", userId)
-        .eq("status", "completed"),
-      supabase!
-        .from("withdrawals")
-        .select("*")
-        .eq("user_id", userId),
-    ]);
-    if (rewards.error) throw rewards.error;
-    if (withdrawals.error) throw withdrawals.error;
-
-    const rewardItems: ActivityItem[] = (rewards.data ?? []).map((row) => ({
-      id: row.id,
-      type: "reward",
-      title: `Task reward · ${(row as { tasks?: { title?: string } }).tasks?.title ?? "Task"}`,
-      subtitle: "Task completed",
-      amount_coins: row.reward_coins,
-      amount_usdt: Number(row.reward_usdt),
-      status: "completed",
-      created_at: row.completed_at ?? new Date().toISOString(),
-    }));
-
-    const withdrawalItems: ActivityItem[] = (withdrawals.data ?? []).map((row) => ({
-      id: row.id,
-      type: "withdrawal",
-      title: `Withdrawal to ${row.network}`,
-      subtitle: `${row.address.slice(0, 4)}...${row.address.slice(-4)} · ${row.status}`,
-      amount_coins: 0,
-      amount_usdt: -Number(row.amount_usdt),
-      status: row.status,
-      created_at: row.created_at,
-    }));
-
-    return [...rewardItems, ...withdrawalItems].sort(
-      (a, b) => +new Date(b.created_at) - +new Date(a.created_at),
-    );
-  }, []);
-}
-
-export async function fetchWallet(userId: string): Promise<Wallet | null> {
-  return safe(async () => {
-    const { data, error } = await supabase!
-      .from("wallets")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (error) throw error;
-    return (data as Wallet) ?? null;
-  }, null);
-}
-
-export async function fetchCheckins(userId: string): Promise<DailyCheckin[]> {
-  return safe(async () => {
-    const { data, error } = await supabase!
-      .from("daily_checkins")
-      .select("*")
-      .eq("user_id", userId)
-      .order("checked_in_at", { ascending: false })
-      .limit(30);
-    if (error) throw error;
-    return (data as DailyCheckin[]) ?? [];
-  }, []);
-}
-
-export interface ClaimResult {
-  coins: number;
-  usdt: number;
-  profile?: Profile;
-}
-
-/**
- * Call the authenticated reward endpoint. Returns `fallback` when there is no
- * session token (offline/demo) or the request fails, so callers can degrade
- * gracefully without ever trusting unverified client state.
- */
-async function postReward<T>(body: Record<string, unknown>, fallback: T): Promise<T> {
-  const token = getSessionToken();
-  if (!token) return fallback;
-  try {
-    const res = await fetch("/api/rewards", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-      },
-      body: JSON.stringify(body),
-    });
-    const json = (await res.json()) as { ok: boolean; data?: T; error?: string };
-    if (!res.ok || !json.ok) throw new Error(json.error ?? "reward_failed");
-    return (json.data ?? fallback) as T;
-  } catch (err) {
-    console.warn("[questify] reward call failed, using fallback", err);
-    return fallback;
-  }
-}
-
-export async function rpcClaimTask(taskId: string): Promise<ClaimResult | null> {
-  return postReward<ClaimResult | null>({ action: "claim_task", taskId }, null);
-}
-
-export async function rpcClaimCheckin(): Promise<ClaimResult | null> {
-  return postReward<ClaimResult | null>({ action: "claim_checkin" }, null);
-}
-
-export async function rpcApplyReferral(code: string): Promise<boolean> {
-  return postReward<boolean>({ action: "apply_referral", code }, false);
-}
-
-export async function rpcWithdraw(
-  amount: number,
-  network: Withdrawal["network"],
-  address: string,
-): Promise<Withdrawal | null> {
-  return postReward<Withdrawal | null>(
-    { action: "withdraw", amount, network, address },
-    null,
-  );
-}
-
-export async function saveWallet(patch: Partial<Wallet>): Promise<boolean> {
-  return postReward<boolean>({ action: "save_wallet", wallet: patch }, false);
-}
-
 /** Runtime brand/bot config (platform_settings overrides env defaults). */
 export async function fetchRuntimeConfig(): Promise<PublicConfig> {
   try {
@@ -237,15 +102,133 @@ export async function fetchRuntimeConfig(): Promise<PublicConfig> {
   }
 }
 
-/** The signed-in user's real linked provider accounts. */
-export async function fetchConnectedAccounts(): Promise<ConnectedAccount[]> {
+export interface MeData {
+  profile: Profile | null;
+  wallet: Wallet | null;
+  userTasks: UserTask[];
+  checkins: DailyCheckin[];
+  activity: ActivityItem[];
+  connectedAccounts: ConnectedAccount[];
+}
+
+const EMPTY_ME: MeData = {
+  profile: null,
+  wallet: null,
+  userTasks: [],
+  checkins: [],
+  activity: [],
+  connectedAccounts: [],
+};
+
+/**
+ * Fetch everything scoped to the authenticated user (profile, wallet, task
+ * completions, check-ins, activity feed and linked accounts) through the
+ * service-role `/api/me` route. Returns `null` when there is no session.
+ */
+export async function fetchMe(): Promise<MeData | null> {
   const token = getSessionToken();
-  if (!token) return [];
+  if (!token) return null;
   try {
-    const res = await fetch("/api/accounts", { headers: { ...authHeaders() } });
-    const json = (await res.json()) as { ok: boolean; data?: ConnectedAccount[] };
-    return json.ok && json.data ? json.data : [];
-  } catch {
-    return [];
+    const res = await fetch("/api/me", { headers: { ...authHeaders() } });
+    const json = (await res.json()) as { ok?: boolean; data?: MeData };
+    if (!res.ok || !json.ok || !json.data) return null;
+    return { ...EMPTY_ME, ...json.data };
+  } catch (err) {
+    console.warn("[questify] me fetch failed", err);
+    return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Mutations (authenticated reward endpoint)
+// ---------------------------------------------------------------------------
+
+export interface ClaimResult {
+  coins: number;
+  usdt: number;
+  profile?: Profile;
+}
+
+/** Error thrown for any failed/unauthorized reward call. */
+export class ApiError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+function rewardErrorMessage(code?: string): string {
+  switch (code) {
+    case "not_authenticated":
+    case "not authenticated":
+    case "unauthorized":
+      return "Your session expired — please reopen the app";
+    case "not_configured":
+      return "Rewards are temporarily unavailable";
+    case "invalid_json":
+    case "invalid_body":
+      return "Something went wrong. Please try again";
+    case "task already completed":
+      return "You already completed this task";
+    case "task not found or inactive":
+      return "This task is no longer available";
+    case "already checked in today":
+      return "You already claimed today's check-in";
+    case "insufficient balance":
+      return "Insufficient balance";
+    case "trust score too low":
+      return "Your trust score is too low to withdraw";
+    case "account suspended":
+      return "Your account is suspended";
+    default:
+      return code && !code.includes("_") ? code : "Something went wrong. Please try again";
+  }
+}
+
+async function postReward<T>(body: Record<string, unknown>): Promise<T> {
+  const token = getSessionToken();
+  if (!token) throw new ApiError("Your session expired — please reopen the app");
+
+  let res: Response;
+  try {
+    res = await fetch("/api/rewards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError("Network error — please check your connection and try again");
+  }
+
+  const json = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    data?: T;
+    error?: string;
+  };
+  if (!res.ok || !json.ok) throw new ApiError(rewardErrorMessage(json.error));
+  return json.data as T;
+}
+
+export async function rpcClaimTask(taskId: string): Promise<ClaimResult> {
+  return postReward<ClaimResult>({ action: "claim_task", taskId });
+}
+
+export async function rpcClaimCheckin(): Promise<ClaimResult> {
+  return postReward<ClaimResult>({ action: "claim_checkin" });
+}
+
+export async function rpcApplyReferral(code: string): Promise<boolean> {
+  return postReward<boolean>({ action: "apply_referral", code });
+}
+
+export async function rpcWithdraw(
+  amount: number,
+  network: Withdrawal["network"],
+  address: string,
+): Promise<Withdrawal> {
+  return postReward<Withdrawal>({ action: "withdraw", amount, network, address });
+}
+
+export async function saveWallet(patch: Partial<Wallet>): Promise<boolean> {
+  return postReward<boolean>({ action: "save_wallet", wallet: patch });
 }

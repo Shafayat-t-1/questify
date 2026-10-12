@@ -197,6 +197,51 @@ drop policy if exists profiles_update on public.profiles;
 create policy profiles_update on public.profiles for update
   using (auth.uid() = id) with check (auth.uid() = id);
 
+-- Harden profiles against privilege escalation / balance minting.
+--
+-- The `profiles_update` policy above only scopes rows to the caller; by itself it
+-- would let a client PATCH its own row and set is_admin / coins / usdt_balance.
+-- Protection is therefore layered:
+--   1. Revoke blanket writes from the client roles and grant column-level UPDATE
+--      only on the self-service (non-sensitive) columns.
+--   2. A BEFORE UPDATE guard trigger rejects any change to a protected column by
+--      a client role. The trigger is deliberately NOT SECURITY DEFINER so
+--      `current_user` reflects the effective session role (anon/authenticated for
+--      PostgREST clients; the function owner, e.g. postgres, for SECURITY DEFINER
+--      reward/admin RPCs and the service role).
+revoke insert, update, delete on public.profiles from anon, authenticated;
+grant update (username, first_name, last_name, photo_url, language_code)
+  on public.profiles to authenticated;
+
+create or replace function public.guard_profiles_protected_columns()
+returns trigger language plpgsql set search_path = public as $$
+begin
+  if current_user in ('anon', 'authenticated') then
+    if new.id             is distinct from old.id
+       or new.telegram_id  is distinct from old.telegram_id
+       or new.is_admin     is distinct from old.is_admin
+       or new.is_banned    is distinct from old.is_banned
+       or new.is_premium   is distinct from old.is_premium
+       or new.coins        is distinct from old.coins
+       or new.usdt_balance is distinct from old.usdt_balance
+       or new.trust_score  is distinct from old.trust_score
+       or new.level        is distinct from old.level
+       or new.referral_code is distinct from old.referral_code
+       or new.referred_by  is distinct from old.referred_by
+       or new.referral_count is distinct from old.referral_count
+    then
+      raise exception 'profiles: protected columns cannot be modified by clients'
+        using errcode = '42501';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_profiles_guard on public.profiles;
+create trigger trg_profiles_guard before update on public.profiles
+  for each row execute function public.guard_profiles_protected_columns();
+
 -- Public, column-limited leaderboard projection. Runs as the view owner so it
 -- bypasses RLS on the base table while exposing only safe columns.
 drop view if exists public.public_profiles;
@@ -840,7 +885,8 @@ create policy connected_accounts_read on public.connected_accounts for select us
 -- ============================================================================
 create extension if not exists pg_trgm;
 
-create index if not exists idx_profiles_username_trgm on public.profiles using gin (username gin_trgm_ops);
+-- `username` is citext; gin_trgm_ops needs an explicit ::text cast to build.
+create index if not exists idx_profiles_username_trgm on public.profiles using gin (((username)::text) gin_trgm_ops);
 create index if not exists idx_profiles_is_admin       on public.profiles (is_admin) where is_admin;
 create index if not exists idx_profiles_created_at     on public.profiles (created_at desc);
 create index if not exists idx_tasks_active_created    on public.tasks (created_at desc) where is_active;

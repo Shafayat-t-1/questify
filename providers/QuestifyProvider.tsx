@@ -11,21 +11,20 @@ import {
 } from "react";
 import { useTelegram } from "@/hooks/useTelegram";
 import {
-  fetchActivity,
-  fetchCheckins,
-  fetchConnectedAccounts,
+  ApiError,
   fetchLeaderboard,
+  fetchMe,
   fetchRuntimeConfig,
   fetchTasks,
   fetchTicker,
-  fetchUserTasks,
   rpcApplyReferral,
   rpcClaimCheckin,
   rpcClaimTask,
   rpcWithdraw,
   saveWallet,
+  type ClaimResult,
 } from "@/lib/data";
-import { CHECKIN_SCHEDULE, EVENT_RAISED_USDT } from "@/lib/seed";
+import { CHECKIN_SCHEDULE } from "@/lib/checkin";
 import { envConfig, type PublicConfig } from "@/lib/config";
 import { setInitData, setSessionToken } from "@/lib/session-client";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -102,13 +101,11 @@ export interface QuestifyContextValue {
     reward: number;
     multiplier: number;
   };
-  eventRaised: number;
   totalTasks: number;
   completedCount: number;
   floaters: Floater[];
   toasts: Toast[];
   confetti: Confetti | null;
-  squadBoost: number;
   config: PublicConfig;
   connectedAccounts: ConnectedAccount[];
   actions: {
@@ -129,33 +126,6 @@ export interface QuestifyContextValue {
 }
 
 const QuestifyContext = createContext<QuestifyContextValue | null>(null);
-
-const LS = {
-  profile: "questify:profile:v1",
-  wallet: "questify:wallet:v1",
-  userTasks: "questify:user_tasks:v1",
-  activity: "questify:activity:v1",
-  checkins: "questify:checkins:v1",
-};
-
-function readLS<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeLS<T>(key: string, value: T) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* storage full / disabled */
-  }
-}
 
 function dateKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
@@ -197,9 +167,11 @@ function deriveCheckin(checkins: DailyCheckin[]) {
 let uid = 0;
 const nextId = () => `${Date.now().toString(36)}-${(uid++).toString(36)}`;
 
-// No seeded/mock completions — user task state is always real backend state.
-function defaultUserTasks(): Record<string, UserTask> {
-  return {};
+/** Human-readable message for any thrown action error. */
+function errorText(err: unknown): string {
+  if (err instanceof ApiError) return err.message;
+  if (err instanceof Error && err.message) return err.message;
+  return "Something went wrong. Please try again.";
 }
 
 export function QuestifyProvider({ children }: { children: React.ReactNode }) {
@@ -220,7 +192,6 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
   const [floaters, setFloaters] = useState<Floater[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [confetti, setConfetti] = useState<Confetti | null>(null);
-  const [squadBoost, setSquadBoost] = useState(0);
 
   const bootstrapped = useRef(false);
 
@@ -264,25 +235,27 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
 
   // --- Bootstrap: auth + initial data -------------------------------------
   const refresh = useCallback(async () => {
-    if (!profile) return;
-    const [t, ut, lb, tk, act, ci] = await Promise.all([
+    const [t, lb, tk, me] = await Promise.all([
       fetchTasks(),
-      fetchUserTasks(profile.id),
       fetchLeaderboard(10),
       fetchTicker(12),
-      fetchActivity(profile.id),
-      fetchCheckins(profile.id),
+      fetchMe(),
     ]);
     setTasks(t);
     setLeaderboard(lb);
     setTicker(tk);
-    setActivity(act);
-    setCheckins(ci);
 
-    const map: Record<string, UserTask> = {};
-    ut.forEach((row) => (map[row.task_id] = row));
-    setUserTasks(map);
-  }, [profile]);
+    if (me) {
+      if (me.profile) setProfile(me.profile);
+      if (me.wallet) setWallet(me.wallet);
+      const map: Record<string, UserTask> = {};
+      me.userTasks.forEach((row) => (map[row.task_id] = row));
+      setUserTasks(map);
+      setActivity(me.activity);
+      setCheckins(me.checkins);
+      setConnectedAccounts(me.connectedAccounts);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isReady || bootstrapped.current) return;
@@ -308,48 +281,40 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         setSessionToken(json.token ?? null);
         setInitData(initData || null);
 
-        const storedProfile = isSupabaseConfigured
-          ? json.profile
-          : readLS<Profile>(LS.profile, json.profile);
-
         // Render the shell as soon as identity is known — the rest streams in.
-        setProfile(storedProfile);
-        setWallet(
-          isSupabaseConfigured
-            ? json.wallet ?? null
-            : readLS<Wallet | null>(LS.wallet, json.wallet ?? null),
-        );
+        setProfile(json.profile);
+        setWallet(json.wallet ?? null);
 
-        const [t, ut, lb, tk, act, ci, accounts, cfg] = await Promise.all([
+        const [t, lb, tk, cfg, me] = await Promise.all([
           fetchTasks(),
-          fetchUserTasks(storedProfile.id),
           fetchLeaderboard(10),
           fetchTicker(12),
-          fetchActivity(storedProfile.id),
-          fetchCheckins(storedProfile.id),
-          fetchConnectedAccounts(),
           configPromise,
+          fetchMe(),
         ]);
 
-        const map: Record<string, UserTask> = isSupabaseConfigured
-          ? {}
-          : readLS<Record<string, UserTask>>(LS.userTasks, defaultUserTasks());
-        ut.forEach((row) => (map[row.task_id] = row));
+        const map: Record<string, UserTask> = {};
+        (me?.userTasks ?? []).forEach((row) => (map[row.task_id] = row));
 
         setTasks(t);
         setUserTasks(map);
         setLeaderboard(lb);
-        setTicker(tk.length ? tk : []);
-        setActivity(
-          isSupabaseConfigured ? act : readLS<ActivityItem[]>(LS.activity, act),
-        );
-        setCheckins(isSupabaseConfigured ? ci : readLS<DailyCheckin[]>(LS.checkins, []));
-        setConnectedAccounts(accounts);
+        setTicker(tk);
+        setActivity(me?.activity ?? []);
+        setCheckins(me?.checkins ?? []);
+        setConnectedAccounts(me?.connectedAccounts ?? []);
         setConfig(cfg);
+        if (me?.profile) setProfile(me.profile);
+        if (me?.wallet) setWallet(me.wallet);
         setStatus("ready");
 
-        if (startParam) {
-          const linked = isSupabaseConfigured ? await rpcApplyReferral(startParam) : true;
+        if (startParam && isSupabaseConfigured) {
+          let linked = false;
+          try {
+            linked = await rpcApplyReferral(startParam);
+          } catch {
+            linked = false;
+          }
           pushToast({
             kind: linked ? "success" : "info",
             title: linked ? "Referral linked" : "Referral code",
@@ -365,23 +330,6 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
 
     void run();
   }, [isReady, initData, startParam, pushToast]);
-
-  // Persist offline mutations
-  useEffect(() => {
-    if (status === "ready" && !isSupabaseConfigured && profile) writeLS(LS.profile, profile);
-  }, [profile, status]);
-  useEffect(() => {
-    if (status === "ready" && !isSupabaseConfigured && wallet) writeLS(LS.wallet, wallet);
-  }, [wallet, status]);
-  useEffect(() => {
-    if (status === "ready" && !isSupabaseConfigured) writeLS(LS.userTasks, userTasks);
-  }, [userTasks, status]);
-  useEffect(() => {
-    if (status === "ready" && !isSupabaseConfigured) writeLS(LS.activity, activity);
-  }, [activity, status]);
-  useEffect(() => {
-    if (status === "ready" && !isSupabaseConfigured) writeLS(LS.checkins, checkins);
-  }, [checkins, status]);
 
   const checkin = useMemo(() => deriveCheckin(checkins), [checkins]);
   const completedCount = useMemo(
@@ -445,12 +393,19 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (isSupabaseConfigured) {
-        const res = await rpcClaimTask(task.id);
-        if (res) {
-          applyProfileDelta(res.coins ?? task.reward_coins, res.usdt ?? task.reward_usdt, 1);
-          spawnReward(res.coins ?? task.reward_coins, res.usdt ?? task.reward_usdt);
-          haptic("medium");
+        let res: ClaimResult;
+        try {
+          res = await rpcClaimTask(task.id);
+        } catch (err) {
+          return { ok: false, message: errorText(err) };
         }
+        if (!res || typeof res.coins !== "number") {
+          return { ok: false, message: "Reward service unavailable, please try again" };
+        }
+        applyProfileDelta(res.coins, res.usdt ?? 0, 1);
+        if (res.profile) setProfile(res.profile);
+        spawnReward(res.coins, res.usdt ?? 0);
+        haptic("medium");
       } else {
         applyProfileDelta(task.reward_coins, task.reward_usdt, 1);
         spawnReward(task.reward_coins, task.reward_usdt);
@@ -505,8 +460,17 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
     const day = checkin.nextDay;
 
     if (isSupabaseConfigured) {
-      const res = await rpcClaimCheckin();
-      if (res) rewardCoins = res.coins ?? rewardCoins;
+      let res: ClaimResult;
+      try {
+        res = await rpcClaimCheckin();
+      } catch (err) {
+        return { ok: false, message: errorText(err) };
+      }
+      if (!res || typeof res.coins !== "number") {
+        return { ok: false, message: "Check-in service unavailable, please try again" };
+      }
+      rewardCoins = res.coins;
+      if (res.profile) setProfile(res.profile);
     }
 
     applyProfileDelta(rewardCoins, 0, 2);
@@ -536,7 +500,6 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       },
       ...prev,
     ]);
-    setSquadBoost((s) => s + 1);
 
     return { ok: true, coins: rewardCoins, message: `+${rewardCoins} coins` };
   }, [profile, checkin, applyProfileDelta, spawnReward, haptic]);
@@ -546,7 +509,8 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
   >(
     async (amount, network, address) => {
       if (!profile) return { ok: false, message: "Not signed in" };
-      if (amount < 1) return { ok: false, message: "Minimum withdrawal is 1 USDT" };
+      if (amount < config.minWithdrawalUsdt)
+        return { ok: false, message: `Minimum withdrawal is ${config.minWithdrawalUsdt} USDT` };
       if (amount > profile.usdt_balance)
         return { ok: false, message: "Insufficient balance" };
       if (profile.trust_score < 30)
@@ -555,8 +519,11 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, message: `Enter a valid ${network} address` };
 
       if (isSupabaseConfigured) {
-        const res = await rpcWithdraw(amount, network, address);
-        if (!res) return { ok: false, message: "Withdrawal service unavailable" };
+        try {
+          await rpcWithdraw(amount, network, address);
+        } catch (err) {
+          return { ok: false, message: errorText(err) };
+        }
       }
 
       setProfile((prev) =>
@@ -600,14 +567,20 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
 
       return { ok: true, usdt: amount, message: "Withdrawal submitted" };
     },
-    [profile, haptic, pushToast],
+    [profile, config.minWithdrawalUsdt, haptic, pushToast],
   );
 
   const updateWallet = useCallback(
     async (patch: Partial<Wallet>) => {
       if (!profile) return { ok: false, message: "Not signed in" };
+      if (isSupabaseConfigured) {
+        try {
+          await saveWallet(patch);
+        } catch (err) {
+          return { ok: false, message: errorText(err) };
+        }
+      }
       setWallet((prev) => (prev ? { ...prev, ...patch } : prev));
-      if (isSupabaseConfigured) await saveWallet(patch);
       return { ok: true, message: "Wallet saved" };
     },
     [profile],
@@ -635,13 +608,11 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       activity,
       checkins,
       checkin,
-      eventRaised: EVENT_RAISED_USDT,
       totalTasks: tasks.length,
       completedCount,
       floaters,
       toasts,
       confetti,
-      squadBoost,
       config,
       connectedAccounts,
       actions: {
@@ -672,7 +643,6 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       floaters,
       toasts,
       confetti,
-      squadBoost,
       config,
       connectedAccounts,
       completeTask,

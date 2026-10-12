@@ -25,6 +25,17 @@ export function compactNumber(value: number): string {
   }).format(Number.isFinite(value) ? value : 0);
 }
 
+/** Accept only http(s) URLs; returns null for anything else (or empty). */
+export function safeExternalUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function shortenWallet(address: string, size = 4): string {
   if (!address) return "";
   if (address.length <= size * 2 + 3) return address;
