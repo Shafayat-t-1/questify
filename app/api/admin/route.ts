@@ -11,6 +11,24 @@ import {
   validHttpUrl,
 } from "@/lib/validation";
 
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const BROADCAST_BATCH = 150;
+
+/** Send one Telegram message; returns true on success. */
+async function sendTelegram(chatId: number | string, text: string): Promise<boolean> {
+  if (!BOT_TOKEN) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 function fail(error: string, status: number) {
   return NextResponse.json({ ok: false, error }, { status });
 }
@@ -178,6 +196,70 @@ export async function POST(request: Request) {
         });
         if (error) throw error;
         return NextResponse.json({ ok: true, data });
+      }
+
+      case "lookup_user": {
+        const query = typeof params.query === "string" ? params.query.slice(0, 64) : null;
+        const { data, error } = await admin.rpc("admin_search_users", {
+          p_admin: adminId,
+          p_query: query,
+          p_limit: boundedInt(params.limit, 1, 100) ?? 25,
+          p_offset: boundedInt(params.offset, 0, 1_000_000) ?? 0,
+        });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
+
+      case "adjust_balance": {
+        if (!isUuid(params.userId)) return fail("invalid_user_id", 400);
+        const deltaCoins = boundedInt(params.delta_coins, -1_000_000_000, 1_000_000_000) ?? 0;
+        const deltaUsdt = boundedNumber(params.delta_usdt, -1_000_000, 1_000_000) ?? 0;
+        if (deltaCoins === 0 && deltaUsdt === 0) return fail("empty_adjustment", 400);
+        const reason = boundedString(params.reason, 200) ?? "manual adjustment";
+        const { data, error } = await admin.rpc("admin_adjust_balance", {
+          p_admin: adminId,
+          p_user_id: params.userId,
+          p_delta_coins: deltaCoins,
+          p_delta_usdt: deltaUsdt,
+          p_reason: reason,
+        });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
+
+      case "broadcast": {
+        const message = boundedString(params.message, 4000);
+        if (!message) return fail("invalid_message", 400);
+        const offset = boundedInt(params.offset, 0, 100_000_000) ?? 0;
+
+        const { data: recipients, error } = await admin
+          .from("profiles")
+          .select("telegram_id")
+          .eq("is_banned", false)
+          .order("created_at", { ascending: true })
+          .range(offset, offset + BROADCAST_BATCH - 1);
+        if (error) throw error;
+
+        const ids = (recipients ?? [])
+          .map((r) => (r as { telegram_id: number | string }).telegram_id)
+          .filter((id) => id !== undefined && id !== null);
+
+        let sent = 0;
+        const CONCURRENCY = 20;
+        for (let i = 0; i < ids.length; i += CONCURRENCY) {
+          const slice = ids.slice(i, i + CONCURRENCY);
+          const results = await Promise.all(slice.map((id) => sendTelegram(id, message)));
+          sent += results.filter(Boolean).length;
+        }
+
+        const processed = ids.length;
+        const nextOffset = offset + processed;
+        const done = processed < BROADCAST_BATCH;
+
+        return NextResponse.json({
+          ok: true,
+          data: { processed, sent, failed: processed - sent, nextOffset, done },
+        });
       }
 
       default:

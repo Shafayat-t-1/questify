@@ -33,6 +33,21 @@ export interface Profile {
   updated_at: string;
 }
 
+export interface ConnectedAccount {
+  provider:
+    | "telegram"
+    | "google"
+    | "x"
+    | "github"
+    | "reddit"
+    | "discord"
+    | "youtube"
+    | "tiktok";
+  provider_user_id: string | null;
+  username: string | null;
+  connected_at: string;
+}
+
 export interface Wallet {
   id: string;
   user_id: string;

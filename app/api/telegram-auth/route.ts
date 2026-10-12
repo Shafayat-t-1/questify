@@ -15,8 +15,9 @@ interface AuthBody {
   referralCode?: string;
 }
 
-const DEMO_COINS = 3450; // Lv.4 Newbie — matches the premium demo header
-const DEMO_USDT = 18.42;
+// Sandbox (no-bot-token) profiles start empty — no mock balances, ever.
+const DEMO_COINS = 0;
+const DEMO_USDT = 0;
 
 function demoProfile(telegram: TelegramUser): Profile {
   const nowIso = new Date().toISOString();
@@ -31,11 +32,11 @@ function demoProfile(telegram: TelegramUser): Profile {
     language_code: telegram.language_code ?? "en",
     coins: DEMO_COINS,
     usdt_balance: DEMO_USDT,
-    trust_score: 78,
-    level: Math.floor(DEMO_COINS / 1000) + 1,
+    trust_score: 50,
+    level: 1,
     referral_code: username.slice(0, 6).toUpperCase().padEnd(8, "X"),
     referred_by: null,
-    referral_count: 12,
+    referral_count: 0,
     is_premium: telegram.is_premium ?? false,
     is_banned: false,
     created_at: nowIso,
@@ -130,6 +131,19 @@ export async function POST(request: Request) {
         .select("*")
         .eq("user_id", profile.id)
         .maybeSingle();
+
+      // Record the real, DB-backed Telegram link for this account (no mock UI).
+      await admin
+        .from("connected_accounts")
+        .upsert(
+          {
+            user_id: profile.id,
+            provider: "telegram",
+            provider_user_id: String(user.id),
+            username: user.username ?? null,
+          },
+          { onConflict: "user_id,provider" },
+        );
 
       // Link referral if provided via start param or referralCode
       const referralCode = body.referralCode ?? startParamFromInit ?? undefined;

@@ -1,12 +1,12 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Activity, Home, ListChecks, Trophy, User } from "lucide-react";
+import { Activity, Home, ListChecks, ShieldCheck, Trophy, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type TabKey = "home" | "tasks" | "leaderboard" | "activity" | "profile";
+export type TabKey = "home" | "tasks" | "leaderboard" | "activity" | "profile" | "admin";
 
-const TABS: { key: TabKey; label: string; Icon: React.ElementType }[] = [
+const BASE_TABS: { key: TabKey; label: string; Icon: React.ElementType }[] = [
   { key: "home", label: "Home", Icon: Home },
   { key: "tasks", label: "Tasks", Icon: ListChecks },
   { key: "leaderboard", label: "Ranks", Icon: Trophy },
@@ -14,12 +14,20 @@ const TABS: { key: TabKey; label: string; Icon: React.ElementType }[] = [
   { key: "profile", label: "Profile", Icon: User },
 ];
 
+const ADMIN_TAB: { key: TabKey; label: string; Icon: React.ElementType } = {
+  key: "admin",
+  label: "Admin",
+  Icon: ShieldCheck,
+};
+
 interface BottomNavProps {
   active: TabKey;
   onChange: (tab: TabKey) => void;
+  isAdmin?: boolean;
 }
 
-export function BottomNav({ active, onChange }: BottomNavProps) {
+export function BottomNav({ active, onChange, isAdmin = false }: BottomNavProps) {
+  const TABS = isAdmin ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
   return (
     <nav className="fixed inset-x-0 bottom-0 z-[70] flex justify-center px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
       <div className="mb-2 flex w-full max-w-md items-center justify-around gap-1 rounded-3xl border border-white/10 bg-obsidian-soft/80 p-1.5 backdrop-blur-2xl shadow-[0_18px_50px_-12px_rgba(0,0,0,0.9)]">

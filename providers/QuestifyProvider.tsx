@@ -13,7 +13,9 @@ import { useTelegram } from "@/hooks/useTelegram";
 import {
   fetchActivity,
   fetchCheckins,
+  fetchConnectedAccounts,
   fetchLeaderboard,
+  fetchRuntimeConfig,
   fetchTasks,
   fetchTicker,
   fetchUserTasks,
@@ -23,12 +25,14 @@ import {
   rpcWithdraw,
   saveWallet,
 } from "@/lib/data";
-import { CHECKIN_SCHEDULE, EVENT_RAISED_USDT, SEED_LEADERBOARD } from "@/lib/seed";
+import { CHECKIN_SCHEDULE, EVENT_RAISED_USDT } from "@/lib/seed";
+import { envConfig, type PublicConfig } from "@/lib/config";
 import { setInitData, setSessionToken } from "@/lib/session-client";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type {
   ActivityItem,
   AuthResponse,
+  ConnectedAccount,
   DailyCheckin,
   LeaderboardEntry,
   Profile,
@@ -105,6 +109,8 @@ export interface QuestifyContextValue {
   toasts: Toast[];
   confetti: Confetti | null;
   squadBoost: number;
+  config: PublicConfig;
+  connectedAccounts: ConnectedAccount[];
   actions: {
     completeTask: (task: Task) => Promise<ActionResult>;
     claimCheckin: () => Promise<ActionResult>;
@@ -191,23 +197,9 @@ function deriveCheckin(checkins: DailyCheckin[]) {
 let uid = 0;
 const nextId = () => `${Date.now().toString(36)}-${(uid++).toString(36)}`;
 
+// No seeded/mock completions — user task state is always real backend state.
 function defaultUserTasks(): Record<string, UserTask> {
-  const seeded: Record<string, UserTask> = {};
-  const precompleted = ["t-me-join-questify", "t-x-follow", "t-gh-star"];
-  precompleted.forEach((taskId, index) => {
-    seeded[taskId] = {
-      id: `local-${taskId}`,
-      user_id: "local",
-      task_id: taskId,
-      status: "completed",
-      reward_coins: 0,
-      reward_usdt: 0,
-      submitted_at: null,
-      completed_at: new Date(Date.now() - (index + 1) * 3_600_000).toISOString(),
-      created_at: new Date(Date.now() - (index + 1) * 3_600_000).toISOString(),
-    };
-  });
-  return seeded;
+  return {};
 }
 
 export function QuestifyProvider({ children }: { children: React.ReactNode }) {
@@ -219,10 +211,12 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [userTasks, setUserTasks] = useState<Record<string, UserTask>>({});
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(SEED_LEADERBOARD);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [ticker, setTicker] = useState<TickerEvent[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [checkins, setCheckins] = useState<DailyCheckin[]>([]);
+  const [config, setConfig] = useState<PublicConfig>(() => envConfig());
+  const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
   const [floaters, setFloaters] = useState<Floater[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [confetti, setConfetti] = useState<Confetti | null>(null);
@@ -296,6 +290,10 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
 
     const run = async () => {
       try {
+        // Kick off the (independent) runtime-config fetch in parallel with auth
+        // so first paint is not serialised behind an extra round-trip.
+        const configPromise = fetchRuntimeConfig();
+
         const res = await fetch("/api/telegram-auth", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -314,6 +312,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
           ? json.profile
           : readLS<Profile>(LS.profile, json.profile);
 
+        // Render the shell as soon as identity is known — the rest streams in.
         setProfile(storedProfile);
         setWallet(
           isSupabaseConfigured
@@ -321,13 +320,15 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
             : readLS<Wallet | null>(LS.wallet, json.wallet ?? null),
         );
 
-        const [t, ut, lb, tk, act, ci] = await Promise.all([
+        const [t, ut, lb, tk, act, ci, accounts, cfg] = await Promise.all([
           fetchTasks(),
           fetchUserTasks(storedProfile.id),
           fetchLeaderboard(10),
           fetchTicker(12),
           fetchActivity(storedProfile.id),
           fetchCheckins(storedProfile.id),
+          fetchConnectedAccounts(),
+          configPromise,
         ]);
 
         const map: Record<string, UserTask> = isSupabaseConfigured
@@ -343,6 +344,8 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
           isSupabaseConfigured ? act : readLS<ActivityItem[]>(LS.activity, act),
         );
         setCheckins(isSupabaseConfigured ? ci : readLS<DailyCheckin[]>(LS.checkins, []));
+        setConnectedAccounts(accounts);
+        setConfig(cfg);
         setStatus("ready");
 
         if (startParam) {
@@ -639,6 +642,8 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       toasts,
       confetti,
       squadBoost,
+      config,
+      connectedAccounts,
       actions: {
         completeTask,
         claimCheckin,
@@ -668,6 +673,8 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       toasts,
       confetti,
       squadBoost,
+      config,
+      connectedAccounts,
       completeTask,
       claimCheckin,
       requestWithdrawal,

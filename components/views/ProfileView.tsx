@@ -8,6 +8,7 @@ import {
   Coins,
   CircleDollarSign,
   ShieldCheck,
+  Share2,
   TrendingUp,
   Users,
   Wallet as WalletIcon,
@@ -16,6 +17,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { GoogleIcon, TelegramIcon, XIcon } from "@/components/icons/brand";
 import { useQuestify } from "@/providers/QuestifyProvider";
 import { useTelegram } from "@/hooks/useTelegram";
+import { referralLink, referralShareUrl } from "@/lib/config";
 import { cn, formatCoins, formatUsdt, levelTitle, timeAgo } from "@/lib/utils";
 import type { ActivityItem } from "@/lib/types";
 
@@ -54,10 +56,10 @@ function TrustRing({ score }: { score: number }) {
   );
 }
 
-const ACCOUNTS = [
-  { key: "google", label: "Google", Icon: GoogleIcon, connected: true },
-  { key: "telegram", label: "Telegram", Icon: TelegramIcon, connected: true },
-  { key: "x", label: "X / Twitter", Icon: XIcon, connected: false },
+const PROVIDERS = [
+  { key: "telegram" as const, label: "Telegram", Icon: TelegramIcon },
+  { key: "google" as const, label: "Google", Icon: GoogleIcon },
+  { key: "x" as const, label: "X / Twitter", Icon: XIcon },
 ];
 
 const ACTIVITY_TINT: Record<ActivityItem["type"], string> = {
@@ -68,19 +70,26 @@ const ACTIVITY_TINT: Record<ActivityItem["type"], string> = {
 };
 
 export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
-  const { profile, wallet, activity, actions } = useQuestify();
-  const { haptic } = useTelegram();
+  const { profile, wallet, activity, actions, config, connectedAccounts } = useQuestify();
+  const { haptic, openLink } = useTelegram();
 
   const username = profile?.username ?? profile?.first_name ?? "Questify User";
-  const referralCode = profile?.referral_code ?? "QUESTIFY";
+  const referralCode = profile?.referral_code ?? "";
+  const refLink = referralLink(config, referralCode);
   const estCoinValue = (profile?.coins ?? 0) * 0.0002;
+  const linkedProviders = new Set(connectedAccounts.map((a) => a.provider));
 
   const copyReferral = () => {
     haptic("light");
-    actions.pushToast({ kind: "success", title: "Referral link copied", message: referralCode });
+    actions.pushToast({ kind: "success", title: "Referral link copied", message: `via @${config.botUsername}` });
     if (typeof navigator !== "undefined" && navigator.clipboard) {
-      void navigator.clipboard.writeText(referralCode);
+      void navigator.clipboard.writeText(refLink);
     }
+  };
+
+  const shareReferral = () => {
+    haptic("medium");
+    openLink(referralShareUrl(config, referralCode));
   };
 
   return (
@@ -109,18 +118,29 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
         <TrustRing score={profile?.trust_score ?? 0} />
       </div>
 
-      <button
-        onClick={copyReferral}
-        className="mt-2.5 flex w-full items-center justify-between rounded-2xl border border-dashed border-neon-orange/40 bg-neon-orange/[0.06] px-3.5 py-2.5 transition active:scale-[0.99]"
-      >
-        <div className="text-left">
-          <p className="text-[10px] uppercase tracking-wider text-white/40">Your referral code</p>
-          <p className="text-sm font-bold tracking-widest text-white">{referralCode}</p>
-        </div>
-        <span className="flex items-center gap-1 text-xs font-semibold text-neon-orange">
-          <Copy className="h-3.5 w-3.5" /> Copy
-        </span>
-      </button>
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          onClick={copyReferral}
+          className="flex flex-1 items-center justify-between rounded-2xl border border-dashed border-neon-orange/40 bg-neon-orange/[0.06] px-3.5 py-2.5 transition active:scale-[0.99]"
+        >
+          <div className="min-w-0 text-left">
+            <p className="text-[10px] uppercase tracking-wider text-white/40">Your referral link</p>
+            <p className="truncate text-xs font-semibold text-white">
+              {referralCode ? `t.me/${config.botUsername}?start=${referralCode}` : `@${config.botUsername}`}
+            </p>
+          </div>
+          <span className="ml-2 flex shrink-0 items-center gap-1 text-xs font-semibold text-neon-orange">
+            <Copy className="h-3.5 w-3.5" /> Copy
+          </span>
+        </button>
+        <button
+          onClick={shareReferral}
+          aria-label="Share referral link"
+          className="grid h-[52px] w-[52px] shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-neon-orange to-amber-500 text-black shadow-[0_0_24px_-8px_rgba(255,107,0,0.9)] transition active:scale-95"
+        >
+          <Share2 className="h-5 w-5" />
+        </button>
+      </div>
 
       <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-xl">
         <div className="flex items-center justify-between">
@@ -178,28 +198,32 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
       <div className="mt-4">
         <h3 className="mb-2 px-1 text-sm font-semibold text-white">Linked Accounts</h3>
         <div className="grid grid-cols-3 gap-2.5">
-          {ACCOUNTS.map((acc) => (
-            <div
-              key={acc.key}
-              className={cn(
-                "relative flex flex-col items-center gap-1.5 rounded-2xl border p-3",
-                acc.connected
-                  ? "border-emerald-400/25 bg-emerald-400/[0.06]"
-                  : "border-white/10 bg-white/[0.03]",
-              )}
-            >
-              {acc.connected && (
-                <span className="absolute right-2 top-2 grid h-4 w-4 place-items-center rounded-full bg-emerald-400 text-black">
-                  <Check className="h-2.5 w-2.5" />
+          {PROVIDERS.map((acc) => {
+            const connected =
+              acc.key === "telegram" ? Boolean(profile) : linkedProviders.has(acc.key);
+            return (
+              <div
+                key={acc.key}
+                className={cn(
+                  "relative flex flex-col items-center gap-1.5 rounded-2xl border p-3",
+                  connected
+                    ? "border-emerald-400/25 bg-emerald-400/[0.06]"
+                    : "border-white/10 bg-white/[0.03]",
+                )}
+              >
+                {connected && (
+                  <span className="absolute right-2 top-2 grid h-4 w-4 place-items-center rounded-full bg-emerald-400 text-black">
+                    <Check className="h-2.5 w-2.5" />
+                  </span>
+                )}
+                <acc.Icon className="h-6 w-6" />
+                <span className="text-[11px] font-medium text-white/70">{acc.label}</span>
+                <span className={cn("text-[9px] font-bold uppercase", connected ? "text-emerald-300" : "text-white/35")}>
+                  {connected ? "Linked" : "Connect"}
                 </span>
-              )}
-              <acc.Icon className="h-6 w-6" />
-              <span className="text-[11px] font-medium text-white/70">{acc.label}</span>
-              <span className={cn("text-[9px] font-bold uppercase", acc.connected ? "text-emerald-300" : "text-white/35")}>
-                {acc.connected ? "Linked" : "Connect"}
-              </span>
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       </div>
 

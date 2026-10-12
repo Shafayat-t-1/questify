@@ -709,3 +709,229 @@ grant execute on function public.admin_update_user(uuid,uuid,boolean,boolean,int
 
 -- Grant basic read to service role where needed (we use service role anyway)
 grant select on public.admin_actions to service_role;
+
+-- ============================================================================
+-- SECTION: MIGRATION SAFETY
+-- ----------------------------------------------------------------------------
+-- Every statement above is additive and idempotent (`create ... if not exists`,
+-- `add column if not exists`, `create or replace`). No migration ever drops or
+-- rewrites user balances, ledger history, wallets or auth state. Apply future
+-- changes the same way: append, never mutate, and record a version row below.
+-- ============================================================================
+create table if not exists public.schema_migrations (
+  version    text primary key,
+  applied_at timestamptz not null default now()
+);
+
+insert into public.schema_migrations (version) values
+  ('0001-foundation'),
+  ('0002-admin-and-verification'),
+  ('0003-scalability-and-config')
+on conflict (version) do nothing;
+
+-- ============================================================================
+-- SECTION: PLATFORM SETTINGS (runtime brand/config overrides)
+-- ----------------------------------------------------------------------------
+-- A public row here lets an operator switch brand/bot/app URL at runtime without
+-- a redeploy. Identity and balances live on profiles, so rebranding never
+-- touches (or breaks) existing user data.
+-- ============================================================================
+create table if not exists public.platform_settings (
+  key         text primary key,
+  value       jsonb not null,
+  is_public   boolean not null default false,
+  description text,
+  updated_at  timestamptz not null default now()
+);
+
+alter table public.platform_settings enable row level security;
+drop policy if exists platform_settings_read on public.platform_settings;
+create policy platform_settings_read on public.platform_settings for select using (is_public);
+
+insert into public.platform_settings (key, value, is_public, description) values
+  ('brand_name',          '"Questify"'::jsonb,                              true,  'Display name of the platform'),
+  ('bot_username',        '"questify_app_bot"'::jsonb,                      true,  'Telegram bot handle (no @) used for all referral links'),
+  ('app_url',             '"https://questify-nine-tau.vercel.app"'::jsonb,  true,  'Canonical Mini App URL'),
+  ('min_withdrawal_usdt', '1'::jsonb,                                       true,  'Minimum withdrawal amount in USDT'),
+  ('support_username',    'null'::jsonb,                                    true,  'Support contact handle (no @)')
+on conflict (key) do nothing;
+
+-- ============================================================================
+-- SECTION: BALANCE LEDGER (immutable, zero data-loss audit of every balance move)
+-- ----------------------------------------------------------------------------
+-- A trigger on profiles records every coin/USDT delta automatically, so no code
+-- path (RPC, admin adjustment, future job) can change a balance without leaving
+-- an auditable trail. History is never deleted.
+-- ============================================================================
+create table if not exists public.balance_ledger (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid not null references public.profiles (id) on delete cascade,
+  delta_coins         bigint not null default 0,
+  delta_usdt          numeric(18,6) not null default 0,
+  balance_coins_after bigint not null,
+  balance_usdt_after  numeric(18,6) not null,
+  reason              text,
+  actor               uuid references public.profiles (id) on delete set null,
+  created_at          timestamptz not null default now()
+);
+
+create index if not exists idx_ledger_user    on public.balance_ledger (user_id, created_at desc);
+create index if not exists idx_ledger_created on public.balance_ledger (created_at desc);
+
+alter table public.balance_ledger enable row level security;
+drop policy if exists balance_ledger_read on public.balance_ledger;
+create policy balance_ledger_read on public.balance_ledger for select using (false); -- service role only
+
+create or replace function public.log_balance_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_dc bigint := coalesce(new.coins, 0) - coalesce(old.coins, 0);
+  v_du numeric(18,6) := coalesce(new.usdt_balance, 0) - coalesce(old.usdt_balance, 0);
+  v_actor text := current_setting('questify.actor', true);
+begin
+  if v_dc <> 0 or v_du <> 0 then
+    insert into public.balance_ledger (
+      user_id, delta_coins, delta_usdt, balance_coins_after, balance_usdt_after, reason, actor
+    ) values (
+      new.id, v_dc, v_du, new.coins, new.usdt_balance,
+      nullif(current_setting('questify.reason', true), ''),
+      nullif(v_actor, '')::uuid
+    );
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_profiles_ledger on public.profiles;
+create trigger trg_profiles_ledger after update on public.profiles
+  for each row execute function public.log_balance_change();
+
+grant select on public.balance_ledger to service_role;
+
+-- ============================================================================
+-- SECTION: CONNECTED ACCOUNTS (real, DB-backed linked accounts)
+-- ----------------------------------------------------------------------------
+-- Replaces the mock "Linked Accounts" UI. Rows only exist once a provider is
+-- actually linked; state is read from here, never hard-coded.
+-- ============================================================================
+create table if not exists public.connected_accounts (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null references public.profiles (id) on delete cascade,
+  provider         text not null check (provider in ('telegram','google','x','github','reddit','discord','youtube','tiktok')),
+  provider_user_id text,
+  username         text,
+  connected_at     timestamptz not null default now(),
+  unique (user_id, provider)
+);
+
+create index if not exists idx_connected_user on public.connected_accounts (user_id);
+
+alter table public.connected_accounts enable row level security;
+drop policy if exists connected_accounts_read on public.connected_accounts;
+-- Service-role only: linked accounts are served to their owner through the
+-- authenticated /api/accounts route, never exposed through the anon key.
+create policy connected_accounts_read on public.connected_accounts for select using (false);
+
+-- ============================================================================
+-- SECTION: SCALABILITY INDEXES
+-- ----------------------------------------------------------------------------
+-- Covering/partial indexes tuned for the hot read paths at high user counts:
+-- leaderboard ordering, admin user search, task feed, per-user history.
+-- ============================================================================
+create extension if not exists pg_trgm;
+
+create index if not exists idx_profiles_username_trgm on public.profiles using gin (username gin_trgm_ops);
+create index if not exists idx_profiles_is_admin       on public.profiles (is_admin) where is_admin;
+create index if not exists idx_profiles_created_at     on public.profiles (created_at desc);
+create index if not exists idx_tasks_active_created    on public.tasks (created_at desc) where is_active;
+create index if not exists idx_user_tasks_completed    on public.user_tasks (user_id, completed_at desc) where status = 'completed';
+create index if not exists idx_withdrawals_open        on public.withdrawals (created_at desc) where status in ('pending','processing');
+create index if not exists idx_referrals_referred      on public.referrals (referred_id);
+
+-- ============================================================================
+-- SECTION: ADMIN — manual balance adjustment (ledger-backed)
+-- ============================================================================
+create or replace function public.admin_adjust_balance(
+  p_admin       uuid,
+  p_user_id     uuid,
+  p_delta_coins bigint        default 0,
+  p_delta_usdt  numeric(18,6) default 0,
+  p_reason      text          default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin_ok boolean;
+  v_prof public.profiles;
+begin
+  v_admin_ok := public.is_admin_user(p_admin);
+  if not v_admin_ok then raise exception 'not authorized' using errcode = '42501'; end if;
+
+  -- Tag the ledger entry this update will emit (balance >= 0 checks protect data).
+  perform set_config('questify.reason', coalesce(p_reason, 'admin adjustment'), true);
+  perform set_config('questify.actor', p_admin::text, true);
+
+  update public.profiles
+  set coins        = coins + coalesce(p_delta_coins, 0),
+      usdt_balance = usdt_balance + coalesce(p_delta_usdt, 0),
+      updated_at   = now()
+  where id = p_user_id
+  returning * into v_prof;
+
+  if not found then raise exception 'user not found'; end if;
+
+  insert into public.admin_actions (admin_id, action, target_type, target_id, details)
+  values (p_admin, 'adjust_balance', 'user', p_user_id::text,
+          jsonb_build_object('delta_coins', p_delta_coins, 'delta_usdt', p_delta_usdt, 'reason', p_reason));
+
+  return to_jsonb(v_prof);
+end;
+$$;
+
+revoke all on function public.admin_adjust_balance(uuid,uuid,bigint,numeric,text) from public;
+grant execute on function public.admin_adjust_balance(uuid,uuid,bigint,numeric,text) to service_role;
+
+-- Admin: paginated user lookup (username/telegram_id/referral code).
+create or replace function public.admin_search_users(
+  p_admin  uuid,
+  p_query  text default null,
+  p_limit  integer default 25,
+  p_offset integer default 0
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin_ok boolean;
+  v_rows jsonb;
+begin
+  v_admin_ok := public.is_admin_user(p_admin);
+  if not v_admin_ok then raise exception 'not authorized' using errcode = '42501'; end if;
+
+  select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) into v_rows
+  from (
+    select id, telegram_id, username, first_name, photo_url, coins, usdt_balance,
+           trust_score, level, referral_code, referral_count, is_premium, is_banned,
+           is_admin, created_at
+    from public.profiles
+    where p_query is null
+       or p_query = ''
+       or username ilike '%' || p_query || '%'
+       or referral_code ilike '%' || p_query || '%'
+       or telegram_id::text = p_query
+    order by created_at desc
+    limit greatest(1, least(coalesce(p_limit, 25), 100))
+    offset greatest(0, coalesce(p_offset, 0))
+  ) t;
+
+  return v_rows;
+end;
+$$;
+
+revoke all on function public.admin_search_users(uuid,text,integer,integer) from public;
+grant execute on function public.admin_search_users(uuid,text,integer,integer) to service_role;

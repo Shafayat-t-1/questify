@@ -9,6 +9,7 @@ import { TasksView } from "@/components/views/TasksView";
 import { LeaderboardView } from "@/components/views/LeaderboardView";
 import { ActivityView } from "@/components/views/ActivityView";
 import { ProfileView } from "@/components/views/ProfileView";
+import { AdminView } from "@/components/views/AdminView";
 import { VerifyModal } from "@/components/tasks/VerifyModal";
 import { WithdrawModal } from "@/components/wallet/WithdrawModal";
 import {
@@ -22,7 +23,7 @@ import { useTelegram } from "@/hooks/useTelegram";
 import type { Task } from "@/lib/types";
 
 function Shell() {
-  const { status } = useQuestify();
+  const { status, profile } = useQuestify();
   const { haptic, selection } = useTelegram();
   const [tab, setTab] = useState<TabKey>("home");
   const [activeTask, setActiveTask] = useState<Task | null>(null);
@@ -62,12 +63,13 @@ function Shell() {
               {tab === "leaderboard" && <LeaderboardView />}
               {tab === "activity" && <ActivityView />}
               {tab === "profile" && <ProfileView onOpenWithdraw={() => setWithdrawOpen(true)} />}
+              {tab === "admin" && profile?.is_admin && <AdminView />}
             </motion.div>
           </AnimatePresence>
         </main>
       )}
 
-      <BottomNav active={tab} onChange={changeTab} />
+      <BottomNav active={tab} onChange={changeTab} isAdmin={Boolean(profile?.is_admin)} />
 
       <VerifyModal task={activeTask} onClose={() => setActiveTask(null)} />
       <WithdrawModal open={withdrawOpen} onClose={() => setWithdrawOpen(false)} />

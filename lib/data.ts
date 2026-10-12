@@ -1,13 +1,9 @@
 import { supabase } from "./supabase";
 import { authHeaders, getSessionToken } from "./session-client";
-import {
-  buildSeedActivity,
-  SEED_LEADERBOARD,
-  SEED_TASKS,
-  SEED_TICKER,
-} from "./seed";
+import { envConfig, type PublicConfig } from "./config";
 import type {
   ActivityItem,
+  ConnectedAccount,
   DailyCheckin,
   LeaderboardEntry,
   Profile,
@@ -43,8 +39,8 @@ export async function fetchTasks(): Promise<Task[]> {
       .eq("is_active", true)
       .order("created_at", { ascending: false });
     if (error) throw error;
-    return (data as Task[]) ?? SEED_TASKS;
-  }, SEED_TASKS);
+    return (data as Task[]) ?? [];
+  }, []);
 }
 
 export async function fetchUserTasks(userId: string): Promise<UserTask[]> {
@@ -77,7 +73,7 @@ export async function fetchLeaderboard(limit = 10): Promise<LeaderboardEntry[]> 
       referrals: row.referral_count ?? 0,
       rank: i + 1,
     }));
-  }, SEED_LEADERBOARD.slice(0, limit));
+  }, []);
 }
 
 export async function fetchTicker(limit = 20): Promise<TickerEvent[]> {
@@ -89,8 +85,7 @@ export async function fetchTicker(limit = 20): Promise<TickerEvent[]> {
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) throw error;
-    if (!data?.length) return SEED_TICKER;
-    return data.map((row) => {
+    return (data ?? []).map((row) => {
       const name = (row as { profiles?: { username?: string } }).profiles?.username ?? "user";
       return {
         id: row.id,
@@ -100,7 +95,7 @@ export async function fetchTicker(limit = 20): Promise<TickerEvent[]> {
         created_at: row.created_at,
       };
     });
-  }, SEED_TICKER);
+  }, []);
 }
 
 export async function fetchActivity(userId: string): Promise<ActivityItem[]> {
@@ -141,11 +136,10 @@ export async function fetchActivity(userId: string): Promise<ActivityItem[]> {
       created_at: row.created_at,
     }));
 
-    const all = [...rewardItems, ...withdrawalItems].sort(
+    return [...rewardItems, ...withdrawalItems].sort(
       (a, b) => +new Date(b.created_at) - +new Date(a.created_at),
     );
-    return all.length ? all : buildSeedActivity(userId);
-  }, buildSeedActivity(userId));
+  }, []);
 }
 
 export async function fetchWallet(userId: string): Promise<Wallet | null> {
@@ -230,4 +224,28 @@ export async function rpcWithdraw(
 
 export async function saveWallet(patch: Partial<Wallet>): Promise<boolean> {
   return postReward<boolean>({ action: "save_wallet", wallet: patch }, false);
+}
+
+/** Runtime brand/bot config (platform_settings overrides env defaults). */
+export async function fetchRuntimeConfig(): Promise<PublicConfig> {
+  try {
+    const res = await fetch("/api/config");
+    const json = (await res.json()) as { ok: boolean; data?: PublicConfig };
+    return json.ok && json.data ? json.data : envConfig();
+  } catch {
+    return envConfig();
+  }
+}
+
+/** The signed-in user's real linked provider accounts. */
+export async function fetchConnectedAccounts(): Promise<ConnectedAccount[]> {
+  const token = getSessionToken();
+  if (!token) return [];
+  try {
+    const res = await fetch("/api/accounts", { headers: { ...authHeaders() } });
+    const json = (await res.json()) as { ok: boolean; data?: ConnectedAccount[] };
+    return json.ok && json.data ? json.data : [];
+  } catch {
+    return [];
+  }
 }
