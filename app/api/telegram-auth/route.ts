@@ -108,6 +108,15 @@ export async function POST(request: Request) {
   }
 
   const initData = body.initData ?? "";
+
+  const startParamFromInit = (() => {
+    try {
+      const p = new URLSearchParams(initData);
+      return p.get("start_param");
+    } catch {
+      return null;
+    }
+  })();
   const user = parseUser(initData);
 
   // Telemetry-free path: with no bot token we accept Telegram-provided identity
@@ -169,7 +178,7 @@ export async function POST(request: Request) {
         .maybeSingle();
 
       // Link referral if provided via start param or referralCode
-      const referralCode = body.referralCode ?? undefined;
+      const referralCode = body.referralCode ?? startParamFromInit ?? undefined;
       if (referralCode) {
         try {
           await admin.rpc("apply_referral", {
@@ -177,7 +186,6 @@ export async function POST(request: Request) {
             p_user: profile.id,
           });
         } catch (e) {
-          // Ignore referral errors to not block auth
           console.warn("[questify] referral link failed", e);
         }
       }
