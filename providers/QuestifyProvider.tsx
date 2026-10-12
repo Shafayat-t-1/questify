@@ -20,13 +20,14 @@ import {
   rpcApplyReferral,
   rpcClaimCheckin,
   rpcClaimTask,
+  rpcStartTask,
   rpcWithdraw,
   saveWallet,
   type ClaimResult,
 } from "@/lib/data";
 import { CHECKIN_SCHEDULE } from "@/lib/checkin";
 import { envConfig, type PublicConfig } from "@/lib/config";
-import { setInitData, setSessionToken } from "@/lib/session-client";
+import { authHeaders, setInitData, setSessionToken } from "@/lib/session-client";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type {
   ActivityItem,
@@ -109,6 +110,7 @@ export interface QuestifyContextValue {
   config: PublicConfig;
   connectedAccounts: ConnectedAccount[];
   actions: {
+    startTask: (task: Task) => Promise<ActionResult>;
     completeTask: (task: Task) => Promise<ActionResult>;
     claimCheckin: () => Promise<ActionResult>;
     requestWithdrawal: (
@@ -118,6 +120,10 @@ export interface QuestifyContextValue {
     ) => Promise<ActionResult>;
     updateWallet: (patch: Partial<Wallet>) => Promise<ActionResult>;
     applyReferral: (code: string) => void;
+    linkAccount: (
+      provider: string,
+      payload: { username?: string; profile_url?: string; provider_user_id?: string },
+    ) => Promise<ActionResult>;
     dismissFloater: (id: string) => void;
     dismissToast: (id: string) => void;
     pushToast: (toast: Omit<Toast, "id">) => void;
@@ -385,6 +391,22 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
   }, [celebrate, pushToast]);
 
   // --- Actions -------------------------------------------------------------
+  // Records the server-side "started" marker so the duration gate in
+  // `claim_task` can be enforced on the database clock (client timer is UX only).
+  const startTask = useCallback<QuestifyContextValue["actions"]["startTask"]>(
+    async (task) => {
+      if (!profile) return { ok: false, message: "Not signed in" };
+      if (!isSupabaseConfigured) return { ok: true };
+      try {
+        await rpcStartTask(task.id);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, message: errorText(err) };
+      }
+    },
+    [profile],
+  );
+
   const completeTask = useCallback<QuestifyContextValue["actions"]["completeTask"]>(
     async (task) => {
       if (!profile) return { ok: false, message: "Not signed in" };
@@ -594,6 +616,28 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
     [pushToast],
   );
 
+  const linkAccount = useCallback<
+    QuestifyContextValue["actions"]["linkAccount"]
+  >(
+    async (provider, payload) => {
+      try {
+        const res = await fetch("/api/accounts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ provider, ...payload }),
+        });
+        const json = (await res.json()) as { ok?: boolean; error?: string };
+        if (!res.ok || !json.ok) throw new Error(json.error || "link_failed");
+        await refresh();
+        pushToast({ kind: "success", title: "Account linked", message: provider });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, message: errorText(err) };
+      }
+    },
+    [pushToast, refresh],
+  );
+
   const value = useMemo<QuestifyContextValue>(
     () => ({
       status,
@@ -616,11 +660,13 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       config,
       connectedAccounts,
       actions: {
+        startTask,
         completeTask,
         claimCheckin,
         requestWithdrawal,
         updateWallet,
         applyReferral,
+        linkAccount,
         dismissFloater,
         dismissToast,
         pushToast,
@@ -645,11 +691,13 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
       confetti,
       config,
       connectedAccounts,
+      startTask,
       completeTask,
       claimCheckin,
       requestWithdrawal,
       updateWallet,
       applyReferral,
+      linkAccount,
       dismissFloater,
       dismissToast,
       pushToast,

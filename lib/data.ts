@@ -149,6 +149,12 @@ export interface ClaimResult {
   profile?: Profile;
 }
 
+export interface StartTaskResult {
+  submitted_at: string;
+  min_seconds: number;
+  verification_type?: string | null;
+}
+
 /** Error thrown for any failed/unauthorized reward call. */
 export class ApiError extends Error {
   constructor(message: string) {
@@ -172,6 +178,17 @@ function rewardErrorMessage(code?: string): string {
       return "You already completed this task";
     case "task not found or inactive":
       return "This task is no longer available";
+    case "verification in progress":
+      return "Verification still in progress — please wait for the timer";
+    case "not_member":
+      return "You haven't joined yet — complete the action, then try again";
+    case "account_not_linked":
+      return "Link the required account first, then try again";
+    case "unsupported_verification":
+    case "task_misconfigured":
+    case "verification_failed":
+    case "verification_error":
+      return "We couldn't verify this task. Please try again later";
     case "already checked in today":
       return "You already claimed today's check-in";
     case "insufficient balance":
@@ -207,6 +224,11 @@ async function postReward<T>(body: Record<string, unknown>): Promise<T> {
   };
   if (!res.ok || !json.ok) throw new ApiError(rewardErrorMessage(json.error));
   return json.data as T;
+}
+
+/** Mark a task as "started" server-side; required before `rpcClaimTask`. */
+export async function rpcStartTask(taskId: string): Promise<StartTaskResult> {
+  return postReward<StartTaskResult>({ action: "start_task", taskId });
 }
 
 export async function rpcClaimTask(taskId: string): Promise<ClaimResult> {

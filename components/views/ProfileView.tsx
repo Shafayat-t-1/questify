@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   BadgeCheck,
@@ -12,9 +13,19 @@ import {
   TrendingUp,
   Users,
   Wallet as WalletIcon,
+  Link2,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { GoogleIcon, TelegramIcon, XIcon } from "@/components/icons/brand";
+import {
+  GoogleIcon,
+  TelegramIcon,
+  XIcon,
+  GitHubIcon,
+  RedditIcon,
+  DiscordIcon,
+  YouTubeIcon,
+  TikTokIcon,
+} from "@/components/icons/brand";
 import { useQuestify } from "@/providers/QuestifyProvider";
 import { useTelegram } from "@/hooks/useTelegram";
 import { referralLink, referralShareUrl } from "@/lib/config";
@@ -60,6 +71,11 @@ const PROVIDERS = [
   { key: "telegram" as const, label: "Telegram", Icon: TelegramIcon },
   { key: "google" as const, label: "Google", Icon: GoogleIcon },
   { key: "x" as const, label: "X / Twitter", Icon: XIcon },
+  { key: "github" as const, label: "GitHub", Icon: GitHubIcon },
+  { key: "reddit" as const, label: "Reddit", Icon: RedditIcon },
+  { key: "discord" as const, label: "Discord", Icon: DiscordIcon },
+  { key: "youtube" as const, label: "YouTube", Icon: YouTubeIcon },
+  { key: "tiktok" as const, label: "TikTok", Icon: TikTokIcon },
 ];
 
 const ACTIVITY_TINT: Record<ActivityItem["type"], string> = {
@@ -72,6 +88,8 @@ const ACTIVITY_TINT: Record<ActivityItem["type"], string> = {
 export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
   const { profile, wallet, activity, actions, config, connectedAccounts } = useQuestify();
   const { haptic, openLink } = useTelegram();
+  const [linking, setLinking] = useState<string | null>(null);
+  const [form, setForm] = useState<{ username?: string; profile_url?: string }>({});
 
   const username = profile?.username ?? profile?.first_name ?? "Questify User";
   const referralCode = profile?.referral_code ?? "";
@@ -218,13 +236,59 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
                 )}
                 <acc.Icon className="h-6 w-6" />
                 <span className="text-[11px] font-medium text-white/70">{acc.label}</span>
-                <span className={cn("text-[9px] font-bold uppercase", connected ? "text-emerald-300" : "text-white/35")}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (connected) return;
+                    haptic("light");
+                    setLinking(acc.key);
+                    setForm({});
+                  }}
+                  className={cn(
+                    "text-[9px] font-bold uppercase",
+                    connected ? "cursor-default text-emerald-300" : "text-white/60 hover:text-white",
+                  )}
+                >
                   {connected ? "Linked" : "Connect"}
-                </span>
+                </button>
               </div>
             );
           })}
         </div>
+        {linking && (
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-semibold text-white flex items-center gap-1">
+                <Link2 className="h-3.5 w-3.5" /> Link {linking}
+              </h4>
+              <button className="text-[10px] text-white/40" onClick={() => setLinking(null)}>
+                Cancel
+              </button>
+            </div>
+            <p className="text-[10px] text-white/40">
+              Enter your username or profile link for verification. This is a fallback when OAuth isn&apos;t configured.
+            </p>
+            <input
+              className="w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-xs text-white placeholder:text-white/30"
+              placeholder={`@username or profile URL for ${linking}`}
+              value={form.profile_url || form.username || ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v.startsWith("http")) setForm({ profile_url: v });
+                else setForm({ username: v.replace(/^@/, "") });
+              }}
+            />
+            <button
+              className="w-full rounded-lg bg-gradient-to-r from-neon-orange to-amber-500 py-2 text-xs font-bold text-black"
+              onClick={async () => {
+                await actions.linkAccount(linking, form);
+                setLinking(null);
+              }}
+            >
+              Save link
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="mt-4">

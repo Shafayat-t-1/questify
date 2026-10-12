@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { verifyTask, type VerifiableTask } from "@/lib/verification";
 import {
   isNetwork,
   isUuid,
@@ -10,7 +11,13 @@ import {
 } from "@/lib/validation";
 
 interface RewardsBody {
-  action?: "claim_task" | "claim_checkin" | "withdraw" | "apply_referral" | "save_wallet";
+  action?:
+    | "start_task"
+    | "claim_task"
+    | "claim_checkin"
+    | "withdraw"
+    | "apply_referral"
+    | "save_wallet";
   taskId?: string;
   amount?: number;
   network?: string;
@@ -46,11 +53,44 @@ export async function POST(request: Request) {
   if (!body || typeof body !== "object") return fail("invalid_body", 400);
 
   const userId = auth.context.userId;
+  const telegramId = auth.context.telegramId;
 
   try {
     switch (body.action) {
+      case "start_task": {
+        if (!isUuid(body.taskId)) return fail("invalid_task", 400);
+        const { data, error } = await admin.rpc("start_task", {
+          p_task_id: body.taskId,
+          p_user: userId,
+        });
+        if (error) throw error;
+        return NextResponse.json({ ok: true, data });
+      }
+
       case "claim_task": {
         if (!isUuid(body.taskId)) return fail("invalid_task", 400);
+
+        // Load the task's verification configuration, then verify it server-side
+        // BEFORE crediting. The duration gate itself runs atomically inside the
+        // claim_task RPC on the database clock.
+        const { data: task, error: taskError } = await admin
+          .from("tasks")
+          .select("id, platform, verification_type, verification_target, verification_rules, is_active")
+          .eq("id", body.taskId)
+          .maybeSingle();
+        if (taskError) throw taskError;
+        if (!task || !(task as { is_active?: boolean }).is_active) {
+          return fail("task not found or inactive", 400);
+        }
+
+        const verdict = await verifyTask({
+          task: task as VerifiableTask,
+          userId,
+          telegramId,
+          admin,
+        });
+        if (!verdict.ok) return fail(verdict.reason ?? "verification_failed", 403);
+
         const { data, error } = await admin.rpc("claim_task", {
           p_task_id: body.taskId,
           p_user: userId,

@@ -72,6 +72,10 @@ export interface Task {
   completions: number;
   is_active: boolean;
   created_at: string;
+  updated_at?: string;
+  verification_type?: string | null;
+  verification_target?: string | null;
+  verification_rules?: Record<string, unknown> | null;
 }
 
 export interface UserTask {

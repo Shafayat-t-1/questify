@@ -73,6 +73,17 @@ function VerifyBody({ task, onClose }: { task: Task; onClose: () => void }) {
     openLink(actionUrl);
     setOpened(true);
     if (task.duration_seconds <= 0) setRemaining(0);
+    // Register the server-side "started" marker so the duration gate is enforced
+    // on the database clock — a forged instant claim cannot pass it.
+    void actions.startTask(task).then((res) => {
+      if (!res.ok) {
+        actions.pushToast({
+          kind: "warning",
+          title: "Couldn't start task",
+          message: res.message ?? "Please try again",
+        });
+      }
+    });
   };
 
   const handleClaim = async () => {

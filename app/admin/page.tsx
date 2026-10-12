@@ -52,7 +52,9 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [authState, setAuthState] = useState<AuthState>("checking");
-  const [tab, setTab] = useState<"tasks" | "withdrawals" | "users" | "stats">("stats");
+  const [tab, setTab] = useState<"tasks" | "withdrawals" | "users" | "broadcast" | "stats">(
+    "stats",
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -149,7 +151,7 @@ export default function AdminPage() {
       {data && (
         <div>
           <div className="flex gap-2 mb-4 flex-wrap">
-            {(["stats", "tasks", "withdrawals", "users"] as const).map((t) => (
+            {(["stats", "tasks", "withdrawals", "users", "broadcast"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -172,6 +174,7 @@ export default function AdminPage() {
           {tab === "tasks" && <TasksManager tasks={data.tasks} onRefresh={refresh} />}
           {tab === "withdrawals" && <WithdrawalsManager withdrawals={data.withdrawals} onRefresh={refresh} />}
           {tab === "users" && <UsersManager users={data.users} onRefresh={refresh} />}
+          {tab === "broadcast" && <BroadcastManager />}
         </div>
       )}
     </div>
@@ -297,24 +300,189 @@ function UsersManager({
   users: Array<Record<string, unknown>>;
   onRefresh: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Array<Record<string, unknown>> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [inspect, setInspect] = useState<Record<string, unknown> | null>(null);
+
   const update = async (id: string, patch: Record<string, unknown>) => {
-    await adminAction("update_user", { userId: id, ...patch });
-    onRefresh();
+    setBusy(true);
+    try {
+      await adminAction("update_user", { userId: id, ...patch });
+      onRefresh();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const adjust = async (id: string, coins: number, usdt: number, reason: string) => {
+    if (coins === 0 && usdt === 0) return;
+    setBusy(true);
+    try {
+      await adminAction("adjust_balance", {
+        userId: id,
+        delta_coins: coins,
+        delta_usdt: usdt,
+        reason: reason || "manual adjustment",
+      });
+      onRefresh();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const search = async () => {
+    setBusy(true);
+    try {
+      const data = (await adminAction("lookup_user", {
+        query: query.trim() || null,
+        limit: 25,
+        offset: 0,
+      })) as Array<Record<string, unknown>>;
+      setResults(Array.isArray(data) ? data : []);
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const list = results ?? users;
 
   return (
     <div className="space-y-2">
-      {users.map((u: Record<string, unknown>) => (
-        <div key={u.id as string} className="rounded-lg border border-white/10 p-3 flex justify-between items-center">
-          <div>
-            <div className="font-medium">{String(u.username || u.telegram_id)}</div>
-            <div className="text-xs text-white/60">Coins: {Number(u.coins)} · USDT: {String(u.usdt_balance)} · Trust: {Number(u.trust_score)} · Banned: {u.is_banned ? "yes" : "no"} · Admin: {u.is_admin ? "yes" : "no"}</div>
+      <div className="flex gap-2">
+        <input
+          className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1"
+          placeholder="Search username / telegram id / referral code"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && search()}
+        />
+        <button className="px-3 py-1 border border-white/20 rounded" onClick={search} disabled={busy}>
+          Search
+        </button>
+        {results && (
+          <button
+            className="px-3 py-1 border border-white/20 rounded"
+            onClick={() => {
+              setResults(null);
+              setQuery("");
+            }}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      {error && <div className="rounded bg-red-900/40 border border-red-500/50 p-2 text-sm">{error}</div>}
+      {list.map((u: Record<string, unknown>) => (
+        <div key={u.id as string} className="rounded-lg border border-white/10 p-3 space-y-2">
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="font-medium">{String(u.username || u.telegram_id)}</div>
+              <div className="text-xs text-white/60">Coins: {Number(u.coins)} · USDT: {String(u.usdt_balance)} · Trust: {Number(u.trust_score)} · Banned: {u.is_banned ? "yes" : "no"} · Admin: {u.is_admin ? "yes" : "no"}</div>
+            </div>
+            <div className="flex gap-2">
+              <button className="px-2 py-1 border border-white/20 rounded text-xs" onClick={() => setInspect(u)}>Inspect</button>
+              <button className="px-2 py-1 border border-red-500/50 rounded text-xs" onClick={() => update(u.id as string, { is_banned: !u.is_banned })}>{Boolean(u.is_banned) ? "Unban" : "Ban"}</button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <button className="px-2 py-1 border border-red-500/50 rounded text-xs" onClick={() => update(u.id as string, { is_banned: !u.is_banned })}>{Boolean(u.is_banned) ? "Unban" : "Ban"}</button>
-          </div>
+          <BalanceEditor disabled={busy} onSubmit={(coins, usdt, reason) => adjust(u.id as string, coins, usdt, reason)} />
         </div>
       ))}
+      {list.length === 0 && <div className="text-sm text-white/50">No users found.</div>}
+      {inspect && (
+        <div className="fixed inset-0 z-50 bg-black/70 p-4 overflow-auto" onClick={() => setInspect(null)}>
+          <div className="mx-auto max-w-lg rounded-lg border border-white/15 bg-[#0B0E14] p-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="font-semibold">User inspector</h3>
+              <button className="px-2 py-1 border border-white/20 rounded text-xs" onClick={() => setInspect(null)}>Close</button>
+            </div>
+            <pre className="text-xs whitespace-pre-wrap break-all text-white/70">{JSON.stringify(inspect, null, 2)}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BalanceEditor({
+  disabled,
+  onSubmit,
+}: {
+  disabled: boolean;
+  onSubmit: (coins: number, usdt: number, reason: string) => void;
+}) {
+  const [coins, setCoins] = useState(0);
+  const [usdt, setUsdt] = useState(0);
+  const [reason, setReason] = useState("");
+  return (
+    <div className="flex flex-wrap gap-2 items-center">
+      <input className="bg-black/30 border border-white/10 rounded px-2 py-1 w-24" type="number" placeholder="±coins" value={coins} onChange={(e) => setCoins(Number(e.target.value))} />
+      <input className="bg-black/30 border border-white/10 rounded px-2 py-1 w-24" type="number" step="0.01" placeholder="±USDT" value={usdt} onChange={(e) => setUsdt(Number(e.target.value))} />
+      <input className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1" placeholder="Reason (audit log)" value={reason} onChange={(e) => setReason(e.target.value)} />
+      <button className="px-2 py-1 border border-orange-500/50 rounded text-xs" disabled={disabled} onClick={() => onSubmit(coins, usdt, reason)}>
+        Adjust balance
+      </button>
+    </div>
+  );
+}
+
+function BroadcastManager() {
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = async () => {
+    if (!message.trim()) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      let offset = 0;
+      let sent = 0;
+      let done = false;
+      let guard = 0;
+      while (!done && guard < 1000) {
+        const res = (await adminAction("broadcast", { message, offset })) as {
+          processed: number;
+          sent: number;
+          nextOffset: number;
+          done: boolean;
+        };
+        sent += res.sent;
+        offset = res.nextOffset;
+        done = res.done;
+        guard += 1;
+      }
+      setResult(`Delivery complete · ${sent} message(s) sent`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <textarea
+        className="bg-black/30 border border-white/10 rounded px-3 py-2 w-full min-h-32"
+        placeholder="Broadcast message to all non-banned users…"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+      />
+      <button className="px-4 py-2 rounded bg-orange-600 disabled:opacity-50" onClick={send} disabled={busy || !message.trim()}>
+        {busy ? "Sending…" : "Send broadcast"}
+      </button>
+      {result && <div className="rounded border border-green-500/40 bg-green-900/20 p-2 text-sm">{result}</div>}
+      {error && <div className="rounded border border-red-500/50 bg-red-900/40 p-2 text-sm">{error}</div>}
     </div>
   );
 }

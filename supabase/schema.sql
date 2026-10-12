@@ -981,3 +981,125 @@ $$;
 
 revoke all on function public.admin_search_users(uuid,text,integer,integer) from public;
 grant execute on function public.admin_search_users(uuid,text,integer,integer) to service_role;
+
+-- ============================================================================
+-- SECTION: TASK VERIFICATION ENGINE (migration 0004)
+-- ----------------------------------------------------------------------------
+-- A task reward may only be credited after BOTH:
+--   (a) the user explicitly started the task server-side (user_tasks.submitted_at),
+--       and the task's required duration has elapsed on the SERVER clock — the
+--       client countdown is advisory only and cannot be trusted; and
+--   (b) any type-specific verification (Telegram channel membership, linked
+--       social account) passed in the API layer, which is the only caller of
+--       claim_task and the only holder of the service-role key.
+-- ============================================================================
+
+-- start_task: idempotent "user opened the action" marker. The FIRST start time
+-- is preserved so re-opening the modal cannot reset the duration gate.
+drop function if exists public.start_task(uuid, uuid);
+create or replace function public.start_task(p_task_id uuid, p_user uuid default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_uid  uuid := coalesce(p_user, auth.uid());
+  v_task public.tasks;
+  v_row  public.user_tasks;
+begin
+  if v_uid is null then raise exception 'not authenticated' using errcode = '28000'; end if;
+
+  select * into v_task from public.tasks where id = p_task_id and is_active = true;
+  if not found then raise exception 'task not found or inactive' using errcode = 'P0002'; end if;
+
+  select * into v_row from public.user_tasks where user_id = v_uid and task_id = p_task_id;
+  if found and v_row.status = 'completed' then
+    raise exception 'task already completed' using errcode = '23505';
+  end if;
+
+  insert into public.user_tasks (user_id, task_id, status, reward_coins, reward_usdt, submitted_at)
+  values (v_uid, p_task_id, 'verifying', v_task.reward_coins, v_task.reward_usdt, now())
+  on conflict (user_id, task_id) do update
+    set status = 'verifying',
+        submitted_at = case
+          when public.user_tasks.status = 'verifying' and public.user_tasks.submitted_at is not null
+            then public.user_tasks.submitted_at
+          else now()
+        end
+  returning * into v_row;
+
+  return jsonb_build_object(
+    'submitted_at', v_row.submitted_at,
+    'min_seconds', v_task.duration_seconds,
+    'verification_type', v_task.verification_type
+  );
+end;
+$$;
+
+revoke all on function public.start_task(uuid, uuid) from public;
+grant execute on function public.start_task(uuid, uuid) to service_role;
+
+-- claim_task (redefined): adds the server-side duration gate before crediting.
+create or replace function public.claim_task(p_task_id uuid, p_user uuid default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_uid      uuid := coalesce(p_user, auth.uid());
+  v_task     public.tasks;
+  v_existing public.user_tasks;
+  v_ref      uuid;
+begin
+  if v_uid is null then raise exception 'not authenticated' using errcode = '28000'; end if;
+
+  select * into v_task from public.tasks where id = p_task_id and is_active = true;
+  if not found then raise exception 'task not found or inactive' using errcode = 'P0002'; end if;
+
+  select * into v_existing from public.user_tasks where user_id = v_uid and task_id = p_task_id;
+  if found and v_existing.status = 'completed' then
+    raise exception 'task already completed' using errcode = '23505';
+  end if;
+
+  -- SERVER-side duration gate. The client must have called start_task and the
+  -- required time must have elapsed on the database clock. A forged/instant
+  -- client callback cannot pass this.
+  if v_task.duration_seconds > 0 then
+    if not found
+       or v_existing.submitted_at is null
+       or now() - v_existing.submitted_at < make_interval(secs => v_task.duration_seconds) then
+      raise exception 'verification in progress' using errcode = 'P0001';
+    end if;
+  end if;
+
+  insert into public.user_tasks (user_id, task_id, status, reward_coins, reward_usdt, submitted_at, completed_at)
+  values (v_uid, p_task_id, 'completed', v_task.reward_coins, v_task.reward_usdt, now(), now())
+  on conflict (user_id, task_id) do update
+    set status = 'completed', reward_coins = excluded.reward_coins,
+        reward_usdt = excluded.reward_usdt, completed_at = now();
+
+  update public.tasks set completions = completions + 1 where id = p_task_id;
+
+  update public.profiles
+     set coins = coins + v_task.reward_coins,
+         usdt_balance = usdt_balance + v_task.reward_usdt,
+         trust_score = least(100, trust_score + 1),
+         level = greatest(1, floor((coins + v_task.reward_coins) / 1000) + 1)
+   where id = v_uid
+   returning referred_by into v_ref;
+
+  -- 10% referral commission (coins + USDT) to the referrer
+  if v_ref is not null then
+    update public.profiles
+       set coins = coins + floor(v_task.reward_coins * 0.1),
+           usdt_balance = usdt_balance + (v_task.reward_usdt * 0.1)
+     where id = v_ref;
+  end if;
+
+  return jsonb_build_object(
+    'coins', v_task.reward_coins,
+    'usdt', v_task.reward_usdt,
+    'profile', (select to_jsonb(p) from public.profiles p where p.id = v_uid)
+  );
+end;
+$$;
+
+revoke all on function public.claim_task(uuid, uuid) from public;
+grant execute on function public.claim_task(uuid, uuid) to service_role;
+
+insert into public.schema_migrations (version) values ('0004-task-verification-engine')
+on conflict (version) do nothing;
