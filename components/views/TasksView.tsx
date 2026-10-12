@@ -50,9 +50,7 @@ export function TasksView({ onStartTask }: TasksViewProps) {
             {available} tasks available · earn coins & USDT
           </p>
         </div>
-        <span className="rounded-full border border-neon-cyan/30 bg-neon-cyan/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-neon-cyan">
-          Live
-        </span>
+
       </div>
 
       <div className="-mx-4 mt-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

@@ -21,7 +21,7 @@ import { useTelegram } from "@/hooks/useTelegram";
 import type { Task } from "@/lib/types";
 
 function Shell() {
-  const { status, isLive } = useQuestify();
+  const { status } = useQuestify();
   const { haptic, selection } = useTelegram();
   const [tab, setTab] = useState<TabKey>("home");
   const [activeTask, setActiveTask] = useState<Task | null>(null);
@@ -40,21 +40,7 @@ function Shell() {
 
   return (
     <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col">
-      <div className="flex items-center justify-center gap-1.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
-        <span
-          className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] ${
-            isLive
-              ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-              : "border-neon-cyan/30 bg-neon-cyan/10 text-neon-cyan"
-          }`}
-        >
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
-          </span>
-          {isLive ? "Live backend" : "Demo mode"}
-        </span>
-      </div>
+      <div className="h-3 pt-[max(0.5rem,env(safe-area-inset-top))]"></div>
 
       {status === "loading" ? (
         <BootSplash />
