@@ -4,6 +4,15 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://questify-nine-tau.vercel.app";
 const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME || "questify_app_bot";
+const MINIAPP_SHORTNAME = process.env.NEXT_PUBLIC_MINIAPP_SHORTNAME || "";
+
+/** Public referral link (uses `?startapp=` so the code reaches the Mini App). */
+function referralDeepLink(code: string): string {
+  const base = MINIAPP_SHORTNAME
+    ? `https://t.me/${BOT_USERNAME}/${MINIAPP_SHORTNAME}`
+    : `https://t.me/${BOT_USERNAME}`;
+  return `${base}?startapp=${encodeURIComponent(code)}`;
+}
 
 interface InlineKeyboardButton {
   text: string;
@@ -53,9 +62,7 @@ export async function POST(request: Request) {
 
     if (chatId !== undefined && text.startsWith("/start")) {
       const ref = text.split(/\s+/)[1];
-      const referralLink = ref
-        ? `https://t.me/${BOT_USERNAME}?start=${encodeURIComponent(ref)}`
-        : `https://t.me/${BOT_USERNAME}`;
+      const referralLink = ref ? referralDeepLink(ref) : `https://t.me/${BOT_USERNAME}`;
       const welcome =
         `🎮 <b>Welcome to Questify!</b>\n\n` +
         `Complete tasks, earn coins & USDT, and withdraw real rewards.\n\n` +
@@ -64,9 +71,12 @@ export async function POST(request: Request) {
 
       // `web_app` opens the Mini App as a native Telegram overlay and passes the
       // signed `initData` the backend verifies — never a plain external URL.
+      // When the share payload carries a referral code we forward it as `?ref=`
+      // so both old (`?start=`) and new (`?startapp=`) links work.
+      const launchUrl = ref ? `${APP_URL}?ref=${encodeURIComponent(ref)}` : APP_URL;
       await sendMessage(chatId, welcome, {
         text: "🚀 Open Questify",
-        web_app: { url: APP_URL },
+        web_app: { url: launchUrl },
       });
       return NextResponse.json({ ok: true });
     }

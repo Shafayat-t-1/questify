@@ -17,7 +17,6 @@ import {
   fetchRuntimeConfig,
   fetchTasks,
   fetchTicker,
-  rpcApplyReferral,
   rpcClaimCheckin,
   rpcClaimTask,
   rpcStartTask,
@@ -181,7 +180,7 @@ function errorText(err: unknown): string {
 }
 
 export function QuestifyProvider({ children }: { children: React.ReactNode }) {
-  const { initData, startParam, haptic, isInTelegram, isReady, user: tgUser } =
+  const { initData, referralCode, haptic, isInTelegram, isReady, user: tgUser } =
     useTelegram();
 
   const [status, setStatus] = useState<Status>("loading");
@@ -278,7 +277,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             initData,
-            referralCode: startParam ?? undefined,
+            referralCode: referralCode ?? undefined,
           }),
         });
         const json = (await res.json()) as AuthResponse;
@@ -313,20 +312,6 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         if (me?.profile) setProfile(me.profile);
         if (me?.wallet) setWallet(me.wallet);
         setStatus("ready");
-
-        if (startParam && isSupabaseConfigured) {
-          let linked = false;
-          try {
-            linked = await rpcApplyReferral(startParam);
-          } catch {
-            linked = false;
-          }
-          pushToast({
-            kind: linked ? "success" : "info",
-            title: linked ? "Referral linked" : "Referral code",
-            message: `Code ${startParam}`,
-          });
-        }
       } catch (err) {
         console.error("[questify] bootstrap failed", err);
         setStatus("error");
@@ -335,7 +320,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
     };
 
     void run();
-  }, [isReady, initData, startParam, pushToast]);
+  }, [isReady, initData, referralCode, pushToast]);
 
   const checkin = useMemo(() => deriveCheckin(checkins), [checkins]);
   const completedCount = useMemo(

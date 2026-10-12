@@ -7,7 +7,6 @@ import {
   isUuid,
   isValidAddress,
   isValidAmount,
-  isValidReferralCode,
 } from "@/lib/validation";
 
 interface RewardsBody {
@@ -16,13 +15,11 @@ interface RewardsBody {
     | "claim_task"
     | "claim_checkin"
     | "withdraw"
-    | "apply_referral"
     | "save_wallet";
   taskId?: string;
   amount?: number;
   network?: string;
   address?: string;
-  code?: string;
   wallet?: { usdt_bep20?: string | null; ton_address?: string | null };
 }
 
@@ -119,16 +116,6 @@ export async function POST(request: Request) {
         });
         if (error) throw error;
         return NextResponse.json({ ok: true, data });
-      }
-
-      case "apply_referral": {
-        if (!isValidReferralCode(body.code)) return fail("invalid_code", 400);
-        const { data, error } = await admin.rpc("apply_referral", {
-          p_code: body.code,
-          p_user: userId,
-        });
-        if (error) throw error;
-        return NextResponse.json({ ok: true, data: Boolean(data) });
       }
 
       case "save_wallet": {
