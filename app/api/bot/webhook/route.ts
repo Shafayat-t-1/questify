@@ -9,12 +9,13 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const update = body as any;
+    const update = body as Record<string, unknown>;
 
-    if (update?.message) {
-      const msg = update.message;
-      const chatId = msg.chat?.id;
-      const text = msg.text || "";
+    if (update && typeof update === "object" && "message" in update) {
+      const msg = (update as Record<string, unknown>).message as Record<string, unknown>;
+      const chat = (msg as Record<string, unknown>).chat as Record<string, unknown> | undefined;
+      const chatId = chat?.id as string | number | undefined;
+      const text = (msg.text as string) || "";
 
       if (text.startsWith("/start")) {
         const parts = text.split(/\s+/);

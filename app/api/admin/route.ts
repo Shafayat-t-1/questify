@@ -28,7 +28,7 @@ export async function GET(request: Request) {
     const { count: totalTasksCompleted } = await admin.from("user_tasks").select("*", { count: "exact", head: true }).eq("status", "completed");
     const { count: pendingWithdrawals } = await admin.from("withdrawals").select("*", { count: "exact", head: true }).eq("status", "pending");
     const { data: payouts } = await admin.from("withdrawals").select("amount_usdt").eq("status", "paid");
-    const totalPaid = (payouts || []).reduce((sum, w: any) => sum + Number(w.amount_usdt || 0), 0);
+    const totalPaid = (payouts || []).reduce((sum: number, w: Record<string, unknown>) => sum + Number(w.amount_usdt || 0), 0);
 
     return NextResponse.json({
       ok: true,
@@ -63,9 +63,9 @@ export async function POST(request: Request) {
   const { data: me } = await admin.from("profiles").select("is_admin").eq("id", session.sub).maybeSingle();
   if (!me?.is_admin) return fail("forbidden", 403);
 
-  let body: any;
+  let body: Record<string, unknown>;
   try {
-    body = await request.json();
+    body = await request.json() as Record<string, unknown>;
   } catch {
     return fail("invalid_json", 400);
   }
@@ -105,8 +105,9 @@ export async function POST(request: Request) {
       default:
         return fail("unknown_action", 400);
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[questify] admin action failed", err);
-    return fail(err.message || "failed", 400);
+    const msg = err instanceof Error ? err.message : "failed";
+    return fail(msg, 400);
   }
 }
