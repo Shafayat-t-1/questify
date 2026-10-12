@@ -168,6 +168,20 @@ export async function POST(request: Request) {
         .eq("user_id", profile.id)
         .maybeSingle();
 
+      // Link referral if provided via start param or referralCode
+      const referralCode = body.referralCode ?? undefined;
+      if (referralCode) {
+        try {
+          await admin.rpc("apply_referral", {
+            p_code: referralCode,
+            p_user: profile.id,
+          });
+        } catch (e) {
+          // Ignore referral errors to not block auth
+          console.warn("[questify] referral link failed", e);
+        }
+      }
+
       const token = signSession({ sub: profile.id, tg: user.id });
       return NextResponse.json({
         ok: true,
