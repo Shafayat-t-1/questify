@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { resolveReferralCode } from "@/lib/referral";
 
 /**
  * Minimal, dependency-free typings for the Telegram WebApp SDK
@@ -124,7 +125,7 @@ export interface UseTelegram {
   expand: () => void;
   openLink: (url: string) => void;
   close: () => void;
-  startParam: string | null;
+  referralCode: string | null;
 }
 
 /**
@@ -208,7 +209,15 @@ export function useTelegram(): UseTelegram {
   }, []);
 
   const user = useMemo(() => webApp?.initDataUnsafe?.user ?? null, [webApp]);
-  const startParam = useMemo(() => webApp?.initDataUnsafe?.start_param ?? null, [webApp]);
+  // Referral code arrives (in priority order) via initData start_param, the
+  // `tgWebAppStartParam` URL param, or the bot's `?ref=` web_app button.
+  const referralCode = useMemo(() => {
+    const href = typeof window !== "undefined" ? window.location.href : null;
+    return resolveReferralCode({
+      initDataStartParam: webApp?.initDataUnsafe?.start_param ?? null,
+      href,
+    });
+  }, [webApp]);
 
   return {
     webApp,
@@ -222,7 +231,7 @@ export function useTelegram(): UseTelegram {
     expand,
     openLink,
     close,
-    startParam,
+    referralCode,
   };
 }
 

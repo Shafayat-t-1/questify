@@ -1,21 +1,24 @@
 import { NextResponse } from "next/server";
 import { signSession } from "@/lib/session";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase";
-import {
-  parseTelegramUser,
-  verifyTelegramInitData,
-  type TelegramUser,
-} from "@/lib/telegram-auth";
+import { verifyTelegramInitData, type TelegramUser } from "@/lib/telegram-auth";
+import { isValidReferralCode } from "@/lib/validation";
 import type { Profile, Wallet } from "@/lib/types";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+/**
+ * Sandbox/demo sessions are opt-in and STRICTLY non-production. They are only
+ * ever reachable behind a verified bot token; there is no unverified path.
+ */
+const DEMO_MODE = process.env.DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
 
 interface AuthBody {
   initData?: string;
   referralCode?: string;
 }
 
-// Sandbox (no-bot-token) profiles start empty — no mock balances, ever.
+// Sandbox profiles start empty — no mock balances, ever.
 const DEMO_COINS = 0;
 const DEMO_USDT = 0;
 
@@ -70,21 +73,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "missing_init_data" }, { status: 400 });
   }
 
-  // When a bot token is configured (production), the HMAC signature and
-  // auth_date freshness MUST validate. Without a token (local dev) we fall back
-  // to the Telegram-provided identity so the Mini App can boot offline.
-  const verified = BOT_TOKEN ? verifyTelegramInitData(initData, BOT_TOKEN) : null;
+  // Fail closed: without a bot token we cannot verify Telegram identity, so we
+  // refuse to mint anything. There is deliberately no unverified fallback.
+  if (!BOT_TOKEN) {
+    console.error(
+      "[questify] telegram-auth: TELEGRAM_BOT_TOKEN is not configured — refusing to issue a session",
+    );
+    return NextResponse.json({ ok: false, error: "bot_token_not_configured" }, { status: 500 });
+  }
 
-  if (BOT_TOKEN && !verified) {
+  const verified = verifyTelegramInitData(initData, BOT_TOKEN);
+  if (!verified) {
     return NextResponse.json({ ok: false, error: "invalid_init_data" }, { status: 401 });
   }
 
-  const startParamFromInit = verified?.startParam ?? null;
-  const user: TelegramUser | null = verified?.user ?? parseTelegramUser(initData);
-
-  if (!user || !Number.isFinite(user.id)) {
-    return NextResponse.json({ ok: false, error: "missing_user" }, { status: 400 });
-  }
+  const user = verified.user;
+  const startParamFromInit = verified.startParam;
 
   // ---- Backend-backed flow ------------------------------------------------
   const admin = getSupabaseAdmin();
@@ -97,6 +101,7 @@ export async function POST(request: Request) {
         .maybeSingle();
 
       let profile = existing as Profile | null;
+      let isNewProfile = false;
 
       if (!profile) {
         const { data: created, error: createError } = await admin
@@ -114,6 +119,7 @@ export async function POST(request: Request) {
           .single();
         if (createError) throw createError;
         profile = created as Profile;
+        isNewProfile = true;
       } else {
         await admin
           .from("profiles")
@@ -145,18 +151,8 @@ export async function POST(request: Request) {
           { onConflict: "user_id,provider" },
         );
 
-      // Link referral if provided via start param or referralCode
-      const referralCode = body.referralCode ?? startParamFromInit ?? undefined;
-      if (referralCode) {
-        try {
-          await admin.rpc("apply_referral", {
-            p_code: referralCode,
-            p_user: profile.id,
-          });
-        } catch (e) {
-          console.warn("[questify] referral link failed", e);
-        }
-      }
+      // Referrals are applied ONLY when this request created the profile.
+      await applyReferralIfNew(admin, profile, isNewProfile, body.referralCode ?? startParamFromInit);
 
       const token = signSession({ sub: profile.id, tg: user.id });
       return NextResponse.json({
@@ -171,7 +167,14 @@ export async function POST(request: Request) {
     }
   }
 
-  // ---- Offline / sandbox flow --------------------------------------------
+  // ---- Offline / sandbox flow (opt-in, non-production only) ---------------
+  if (!DEMO_MODE) {
+    console.error(
+      "[questify] telegram-auth: Supabase is not configured and DEMO_MODE is off — refusing to issue a session",
+    );
+    return NextResponse.json({ ok: false, error: "not_configured" }, { status: 500 });
+  }
+
   const profile = demoProfile(user);
   const token = signSession({ sub: profile.id, tg: user.id, demo: true });
   return NextResponse.json({
@@ -182,11 +185,53 @@ export async function POST(request: Request) {
   });
 }
 
+/**
+ * Apply a referral code, logging a single non-personal outcome. Skips when the
+ * profile is not new, the code is malformed, or it is the user's own code.
+ */
+async function applyReferralIfNew(
+  admin: NonNullable<ReturnType<typeof getSupabaseAdmin>>,
+  profile: Profile,
+  isNewProfile: boolean,
+  rawCode: string | null | undefined,
+): Promise<void> {
+  if (!rawCode) return;
+
+  if (!isNewProfile) {
+    console.info("[questify] referral_skipped", { reason: "not_new_profile" });
+    return;
+  }
+  if (!isValidReferralCode(rawCode)) {
+    console.info("[questify] referral_skipped", { reason: "invalid_code" });
+    return;
+  }
+  if (profile.referral_code && rawCode.trim().toUpperCase() === profile.referral_code.toUpperCase()) {
+    console.info("[questify] referral_skipped", { reason: "self_referral" });
+    return;
+  }
+
+  try {
+    const { data, error } = await admin.rpc("apply_referral", {
+      p_code: rawCode,
+      p_user: profile.id,
+    });
+    if (error) throw error;
+    if (data) {
+      console.info("[questify] referral_applied");
+    } else {
+      console.info("[questify] referral_skipped", { reason: "unknown_or_already_referred" });
+    }
+  } catch (e) {
+    console.warn("[questify] referral link failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
     service: "questify-telegram-auth",
     botConfigured: Boolean(BOT_TOKEN),
+    demoMode: DEMO_MODE,
     supabaseConfigured: isSupabaseConfigured,
   });
 }

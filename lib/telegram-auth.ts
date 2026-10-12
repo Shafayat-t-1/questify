@@ -108,16 +108,3 @@ export function verifyTelegramInitData(
     queryId: params.get("query_id"),
   };
 }
-
-/** Parse the `user` field without verifying the signature (never trust this). */
-export function parseTelegramUser(initData: string): TelegramUser | null {
-  if (!initData) return null;
-  try {
-    const raw = new URLSearchParams(initData).get("user");
-    if (!raw) return null;
-    const user = JSON.parse(raw) as TelegramUser;
-    return user && Number.isFinite(user.id) ? user : null;
-  } catch {
-    return null;
-  }
-}

@@ -239,10 +239,6 @@ export async function rpcClaimCheckin(): Promise<ClaimResult> {
   return postReward<ClaimResult>({ action: "claim_checkin" });
 }
 
-export async function rpcApplyReferral(code: string): Promise<boolean> {
-  return postReward<boolean>({ action: "apply_referral", code });
-}
-
 export async function rpcWithdraw(
   amount: number,
   network: Withdrawal["network"],

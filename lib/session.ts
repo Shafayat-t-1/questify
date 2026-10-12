@@ -49,8 +49,9 @@ function requireSecret(): Buffer {
   const bytes = Buffer.byteLength(raw, "utf8");
   if (bytes < MIN_SECRET_BYTES || FORBIDDEN_SECRETS.has(raw)) {
     throw new Error(
-      `QUESTIFY_JWT_SECRET must be a random secret of at least ${MIN_SECRET_BYTES} bytes ` +
-        `(configured length: ${bytes}). Generate one with: openssl rand -hex 32`,
+      `QUESTIFY_JWT_SECRET is required to sign sessions and must be a random secret of at ` +
+        `least ${MIN_SECRET_BYTES} bytes (configured length: ${bytes} bytes). There is no ` +
+        `fallback secret. Generate one with: openssl rand -hex 32`,
     );
   }
   return Buffer.from(raw, "utf8");
