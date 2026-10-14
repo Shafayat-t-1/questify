@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { signSession } from "@/lib/session";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyTelegramInitData, type TelegramUser } from "@/lib/telegram-auth";
-import { isValidReferralCode } from "@/lib/validation";
+import { processReferral, type ReferralEventRecord, type ReferralRepo } from "@/lib/referral-server";
 import type { Profile, Wallet } from "@/lib/types";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -151,8 +151,18 @@ export async function POST(request: Request) {
           { onConflict: "user_id,provider" },
         );
 
-      // Referrals are applied ONLY when this request created the profile.
-      await applyReferralIfNew(admin, profile, isNewProfile, body.referralCode ?? startParamFromInit);
+      // Referral resolution is trust-ordered inside `processReferral`:
+      // HMAC-verified initData start_param first, then the client-sent param
+      // (tgWebAppStartParam / ?ref=), then an unconsumed pending_referrals row.
+      // Eligibility is checked against the account, not "was it just created",
+      // so a profile pre-created by any path can still attach a referrer.
+      await processReferral(buildReferralRepo(admin), {
+        userId: profile.id,
+        telegramId: user.id,
+        isNewProfile,
+        initDataStartParam: startParamFromInit,
+        clientParam: body.referralCode ?? null,
+      });
 
       const token = signSession({ sub: profile.id, tg: user.id });
       return NextResponse.json({
@@ -186,44 +196,94 @@ export async function POST(request: Request) {
 }
 
 /**
- * Apply a referral code, logging a single non-personal outcome. Skips when the
- * profile is not new, the code is malformed, or it is the user's own code.
+ * Supabase/service-role adapter for the dependency-injected referral engine.
+ * The DB enforces the same eligibility rule inside `apply_referral`; the
+ * snapshot read here exists so the audit row can carry a precise reason.
  */
-async function applyReferralIfNew(
+function buildReferralRepo(
   admin: NonNullable<ReturnType<typeof getSupabaseAdmin>>,
-  profile: Profile,
-  isNewProfile: boolean,
-  rawCode: string | null | undefined,
-): Promise<void> {
-  if (!rawCode) return;
+): ReferralRepo {
+  return {
+    async getEligibility(userId) {
+      const { data: profile, error: profileError } = await admin
+        .from("profiles")
+        .select("referred_by, created_at")
+        .eq("id", userId)
+        .maybeSingle();
+      if (profileError) throw profileError;
+      if (!profile) return null;
 
-  if (!isNewProfile) {
-    console.info("[questify] referral_skipped", { reason: "not_new_profile" });
-    return;
-  }
-  if (!isValidReferralCode(rawCode)) {
-    console.info("[questify] referral_skipped", { reason: "invalid_code" });
-    return;
-  }
-  if (profile.referral_code && rawCode.trim().toUpperCase() === profile.referral_code.toUpperCase()) {
-    console.info("[questify] referral_skipped", { reason: "self_referral" });
-    return;
-  }
+      const [{ count: completedTasks, error: taskError }, { count: withdrawals, error: withdrawalError }] =
+        await Promise.all([
+          admin
+            .from("user_tasks")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .eq("status", "completed"),
+          admin
+            .from("withdrawals")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId),
+        ]);
+      if (taskError) throw taskError;
+      if (withdrawalError) throw withdrawalError;
 
-  try {
-    const { data, error } = await admin.rpc("apply_referral", {
-      p_code: rawCode,
-      p_user: profile.id,
-    });
-    if (error) throw error;
-    if (data) {
-      console.info("[questify] referral_applied");
-    } else {
-      console.info("[questify] referral_skipped", { reason: "unknown_or_already_referred" });
-    }
-  } catch (e) {
-    console.warn("[questify] referral link failed", e instanceof Error ? e.message : "unknown");
-  }
+      const { data: consumed, error: consumedError } = await admin
+        .from("referrals")
+        .select("id")
+        .eq("referred_id", userId)
+        .limit(1)
+        .maybeSingle();
+      if (consumedError) throw consumedError;
+
+      return {
+        referredBy: (profile.referred_by as string | null) ?? null,
+        referralConsumed: Boolean(consumed),
+        accountCreatedAt: String(profile.created_at),
+        completedTasks: completedTasks ?? 0,
+        withdrawals: withdrawals ?? 0,
+      };
+    },
+
+    async findReferrerIdByCode(code) {
+      const { data, error } = await admin
+        .from("profiles")
+        .select("id")
+        .eq("referral_code", code)
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return (data?.id as string | undefined) ?? null;
+    },
+
+    async applyReferral(userId, code) {
+      const { data, error } = await admin.rpc("apply_referral", {
+        p_code: code,
+        p_user: userId,
+      });
+      if (error) throw error;
+      return Boolean(data);
+    },
+
+    async claimPendingReferral(telegramId) {
+      const { data, error } = await admin.rpc("claim_pending_referral", {
+        p_telegram_id: telegramId,
+      });
+      if (error) throw error;
+      return typeof data === "string" && data.length > 0 ? data : null;
+    },
+
+    async logEvent(event: ReferralEventRecord) {
+      const { error } = await admin.from("referral_events").insert({
+        telegram_id: event.telegramId,
+        source: event.source,
+        code_raw: event.codeRaw,
+        outcome: event.outcome,
+        reason: event.reason,
+      });
+      if (error) throw error;
+    },
+  };
 }
 
 export async function GET() {

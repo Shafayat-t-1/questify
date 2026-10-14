@@ -18,6 +18,31 @@ export interface ReferralSources {
   href?: string | null;
 }
 
+export interface ParsedReferralCode {
+  /** The base referral code (uppercased, without any source suffix). */
+  code: string;
+  /** Optional source tag (e.g. `tt`, `fb`, `yt`). Stored, never trusted. */
+  suffix: string | null;
+}
+
+/** Hard cap so a hostile payload can never be treated as a code. */
+const MAX_RAW_CODE_LENGTH = 64;
+const CODE_RE = /^([A-Z0-9]{3,32})(?:_([A-Z0-9]{1,16}))?$/;
+
+/**
+ * Parse `CODE` or `CODE_suffix` into its parts. Case-insensitive, trimmed and
+ * length-limited. Returns null for anything that cannot be a referral code.
+ * The suffix is an untrusted provenance tag (tt/fb/yt/...) and is never used to
+ * resolve a referrer.
+ */
+export function parseReferralCode(raw: string | null | undefined): ParsedReferralCode | null {
+  const trimmed = nonEmpty(raw);
+  if (!trimmed || trimmed.length > MAX_RAW_CODE_LENGTH) return null;
+  const match = CODE_RE.exec(trimmed.toUpperCase());
+  if (!match) return null;
+  return { code: match[1], suffix: match[2] ?? null };
+}
+
 function nonEmpty(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();

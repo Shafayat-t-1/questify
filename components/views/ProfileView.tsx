@@ -144,9 +144,7 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
           <div className="min-w-0 text-left">
             <p className="text-[10px] uppercase tracking-wider text-white/40">Your referral link</p>
             <p className="truncate text-xs font-semibold text-white">
-              {referralCode
-                ? `t.me/${config.botUsername}${config.miniappShortname ? `/${config.miniappShortname}` : ""}?startapp=${referralCode}`
-                : `@${config.botUsername}`}
+              {referralCode ? refLink.replace(/^https?:\/\//, "") : `@${config.botUsername}`}
             </p>
           </div>
           <span className="ml-2 flex shrink-0 items-center gap-1 text-xs font-semibold text-neon-orange">
