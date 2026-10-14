@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getSupabaseAdmin } from "@/lib/supabase";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -6,12 +7,18 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://questify-nine-tau.ve
 const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME || "questify_app_bot";
 const MINIAPP_SHORTNAME = process.env.NEXT_PUBLIC_MINIAPP_SHORTNAME || "";
 
-/** Public referral link (uses `?startapp=` so the code reaches the Mini App). */
+/**
+ * Public referral link shared by users. Prefers the Direct-Link form
+ * (`t.me/<bot>/<shortname>?startapp=`) because that always delivers the code to
+ * the Mini App. Without a shortname it falls back to the bot link
+ * (`t.me/<bot>?start=`) which reaches this webhook, where the code is stored as
+ * a pending referral — so it never depends on a Main Mini App being configured.
+ */
 function referralDeepLink(code: string): string {
-  const base = MINIAPP_SHORTNAME
-    ? `https://t.me/${BOT_USERNAME}/${MINIAPP_SHORTNAME}`
-    : `https://t.me/${BOT_USERNAME}`;
-  return `${base}?startapp=${encodeURIComponent(code)}`;
+  if (MINIAPP_SHORTNAME) {
+    return `https://t.me/${BOT_USERNAME}/${MINIAPP_SHORTNAME}?startapp=${encodeURIComponent(code)}`;
+  }
+  return `https://t.me/${BOT_USERNAME}?start=${encodeURIComponent(code)}`;
 }
 
 interface InlineKeyboardButton {
@@ -23,8 +30,29 @@ interface InlineKeyboardButton {
 interface TelegramUpdate {
   message?: {
     chat?: { id?: number | string };
+    from?: { id?: number | string };
     text?: string;
   };
+}
+
+/**
+ * Persist a `/start CODE` payload so telegram-auth can consume it even when the
+ * Mini App opens without a `start_param` (inline web_app buttons never carry
+ * one). Best-effort: a storage failure must not break the bot reply.
+ */
+async function storePendingReferral(telegramId: number | string, code: string): Promise<void> {
+  const admin = getSupabaseAdmin();
+  if (!admin) return;
+  try {
+    await admin
+      .from("pending_referrals")
+      .upsert(
+        { telegram_id: telegramId, code, created_at: new Date().toISOString(), consumed_at: null },
+        { onConflict: "telegram_id" },
+      );
+  } catch (err) {
+    console.error("[questify] pending referral save failed", err);
+  }
 }
 
 async function sendMessage(chatId: number | string, text: string, button: InlineKeyboardButton) {
@@ -62,6 +90,10 @@ export async function POST(request: Request) {
 
     if (chatId !== undefined && text.startsWith("/start")) {
       const ref = text.split(/\s+/)[1];
+      const fromId = update.message?.from?.id ?? chatId;
+      if (ref && ref.length <= 64 && fromId !== undefined) {
+        await storePendingReferral(fromId, ref);
+      }
       const referralLink = ref ? referralDeepLink(ref) : `https://t.me/${BOT_USERNAME}`;
       const welcome =
         `🎮 <b>Welcome to Questify!</b>\n\n` +

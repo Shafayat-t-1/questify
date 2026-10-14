@@ -46,17 +46,25 @@ export function botLink(config: PublicConfig): string {
 /**
  * Referral deep link for a user's own code.
  *
- * Uses the `?startapp=` parameter (delivered to the Mini App as
- * `initData.start_param`) — NOT `?start=`, which is a bot-chat payload that
- * never reaches the Mini App. When `NEXT_PUBLIC_MINIAPP_SHORTNAME` is set the
- * direct-link form `t.me/<bot>/<shortname>?startapp=` is used.
+ * Two Telegram link shapes deliver a referral code, and only these two:
+ *
+ *   1. Direct-Link Mini App: `t.me/<bot>/<shortname>?startapp=<code>` — reaches
+ *      the Mini App as `initData.start_param`. Used when a short name is set.
+ *   2. Bot link: `t.me/<bot>?start=<code>` — invokes `messages.startBot`, so the
+ *      bot receives `/start <code>` and stores it as a pending referral. This is
+ *      the fallback when no short name is configured, because the bare
+ *      `t.me/<bot>?startapp=` form requires a Main Mini App to be set in
+ *      BotFather — otherwise the link silently loses the code.
+ *
+ * It never emits a `web_app` button URL, which cannot carry a start parameter.
  */
 export function referralLink(config: PublicConfig, referralCode: string | null | undefined): string {
   if (!referralCode) return botLink(config);
-  const base = config.miniappShortname
-    ? `https://t.me/${config.botUsername}/${config.miniappShortname}`
-    : `https://t.me/${config.botUsername}`;
-  return `${base}?startapp=${encodeURIComponent(referralCode)}`;
+  const code = encodeURIComponent(referralCode);
+  if (config.miniappShortname) {
+    return `https://t.me/${config.botUsername}/${config.miniappShortname}?startapp=${code}`;
+  }
+  return `https://t.me/${config.botUsername}?start=${code}`;
 }
 
 /** Share URL usable with Telegram's `shareURL` / native share sheet. */
