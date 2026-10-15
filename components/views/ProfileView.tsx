@@ -8,6 +8,7 @@ import {
   Copy,
   Coins,
   CircleDollarSign,
+  Crown,
   ShieldCheck,
   Share2,
   TrendingUp,
@@ -121,6 +122,11 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
             <h2 className="truncate text-base font-semibold text-white">{username}</h2>
             {profile?.is_premium && <BadgeCheck className="h-4 w-4 text-neon-cyan" />}
           </div>
+          {profile?.is_founder && (
+            <span className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/10 px-1.5 py-px text-[9px] font-bold uppercase tracking-wider text-amber-200">
+              <Crown className="h-2.5 w-2.5" /> Founder &amp; Supreme Owner
+            </span>
+          )}
           <p className="text-xs text-white/45">
             Lv.{profile?.level ?? 1} · {levelTitle(profile?.level ?? 1)}
           </p>

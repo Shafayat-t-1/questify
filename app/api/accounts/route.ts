@@ -62,6 +62,18 @@ export async function POST(request: Request) {
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ ok: false, error: "not_configured" }, { status: 503 });
 
+  // Phase 3A: suspended accounts cannot write new connected accounts. This table
+  // is only ever written through this service-role route, so the check here is
+  // the enforcement point (the RPC-level ban guards cover rewards/withdrawals).
+  const { data: me } = await admin
+    .from("profiles")
+    .select("is_banned")
+    .eq("id", auth.context.userId)
+    .maybeSingle();
+  if ((me as { is_banned?: boolean } | null)?.is_banned) {
+    return NextResponse.json({ ok: false, error: "account_suspended" }, { status: 403 });
+  }
+
   const outcome = await checkRateLimit(admin, "accounts", auth.context.userId);
   if (!outcome.allowed) return rateLimitedResponse(outcome);
 

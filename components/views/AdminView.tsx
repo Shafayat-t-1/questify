@@ -9,16 +9,27 @@ import {
   Gauge,
   Megaphone,
   RefreshCw,
-  Search,
-  Send,
   ShieldCheck,
-  Users,
+  UserCheck,
   XCircle,
 } from "lucide-react";
 import { authHeaders } from "@/lib/session-client";
 import { useQuestify } from "@/providers/QuestifyProvider";
 import { useTelegram } from "@/hooks/useTelegram";
 import { cn, formatCoins, formatUsdt } from "@/lib/utils";
+
+/**
+ * In-app Quick Panel (trimmed in Phase 3A).
+ *
+ * The Mini App keeps only the three things worth doing on a phone:
+ *   · approve / reject pending withdrawals (with the required tx hash)
+ *   · ban / unban a user
+ *   · a glance at both platform wallet balances
+ *
+ * Everything deeper — user search & manual balance adjustment, task CRUD,
+ * business settings, broadcast, audit log — lives in the standalone control
+ * center at /mcc (full-width, cookie-authenticated, open in a browser).
+ */
 
 interface AdminStats {
   totalUsers: number;
@@ -34,10 +45,7 @@ interface AdminUser {
   coins: number;
   usdt_balance: number;
   trust_score: number;
-  level: number;
   is_banned: boolean | null;
-  is_admin: boolean | null;
-  created_at: string;
 }
 interface AdminWithdrawal {
   id: string;
@@ -50,58 +58,21 @@ interface AdminWithdrawal {
   created_at: string;
   profiles?: { username?: string | null; telegram_id?: number | string | null };
 }
-interface AdminSetting {
-  key: string;
-  value: unknown;
-  is_public: boolean | null;
-  description: string | null;
-}
 interface AdminWallet {
   balance: number;
-  entries: Array<{ id: string; type: string; amount_usdt: number; balance_after: number }>;
 }
 interface AdminData {
   stats: AdminStats;
   users: AdminUser[];
   withdrawals: AdminWithdrawal[];
-  settings?: AdminSetting[];
   wallets?: { owner: AdminWallet; marketing: AdminWallet };
 }
 
-type Panel = "overview" | "users" | "withdrawals" | "broadcast" | "settings";
+type Panel = "payouts" | "users";
 
-interface SettingField {
-  key: string;
-  label: string;
-  kind: "number" | "numbers" | "text";
-  hint?: string;
-}
-
-const SETTING_FIELDS: SettingField[] = [
-  { key: "owner_wallet_split_pct", label: "Owner wallet split (fraction)", kind: "number", hint: "must sum to 1 with marketing" },
-  { key: "marketing_wallet_split_pct", label: "Marketing wallet split (fraction)", kind: "number" },
-  { key: "referral_tier1_commission_pct", label: "Tier-1 referral commission (fraction)", kind: "number", hint: "of task margin" },
-  { key: "referral_tier2_commission_pct", label: "Tier-2 referral commission (fraction)", kind: "number", hint: "of task margin" },
-  { key: "referral_instant_bonus_coins", label: "Instant referral bonus (coins)", kind: "number" },
-  { key: "referral_instant_bonus_usdt", label: "Instant referral bonus (USDT)", kind: "number" },
-  { key: "referral_bonus_min_tasks", label: "Min tasks before instant bonus", kind: "number" },
-  { key: "referral_commission_pct", label: "Referral commission (legacy, unused)", kind: "number", hint: "0.1 = 10%" },
-  { key: "referral_signup_reward_coins", label: "Referral signup reward (coins)", kind: "number" },
-  { key: "referral_signup_reward_usdt", label: "Referral signup reward (USDT)", kind: "number" },
-  { key: "coin_to_usdt_rate", label: "Coin→USDT rate", kind: "number" },
-  { key: "withdrawal_fee_bep20", label: "BEP-20 withdrawal fee (USDT)", kind: "number" },
-  { key: "withdrawal_fee_ton", label: "TON withdrawal fee (USDT)", kind: "number" },
-  { key: "checkin_reward_schedule", label: "Check-in rewards (7, comma-separated)", kind: "numbers" },
-  { key: "checkin_multiplier_schedule", label: "Check-in multipliers (7, comma-separated)", kind: "numbers" },
-  { key: "level_coins_per_level", label: "Coins per level", kind: "number" },
-  { key: "trust_score_task_delta", label: "Trust gain per task", kind: "number" },
-  { key: "trust_score_checkin_delta", label: "Trust gain per check-in", kind: "number" },
-  { key: "trust_score_cap", label: "Trust score cap", kind: "number" },
-  { key: "trust_threshold_for_withdrawal", label: "Min trust to withdraw", kind: "number" },
-  { key: "min_withdrawal_usdt", label: "Minimum withdrawal (USDT)", kind: "number" },
-  { key: "leaderboard_season_label", label: "Leaderboard season label", kind: "text" },
-  { key: "leaderboard_reset_label", label: "Leaderboard reset label", kind: "text" },
-  { key: "leaderboard_reward_note", label: "Leaderboard reward note", kind: "text" },
+const PANELS: { key: Panel; label: string }[] = [
+  { key: "payouts", label: "Payouts" },
+  { key: "users", label: "Users" },
 ];
 
 async function adminFetch<T>(
@@ -119,75 +90,26 @@ async function adminFetch<T>(
   }
 }
 
-function StatCard({
-  label,
-  value,
-  Icon,
-  tint,
-}: {
-  label: string;
-  value: string;
-  Icon: React.ElementType;
-  tint: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xl">
-      <Icon className={cn("h-4 w-4", tint)} />
-      <p className="mt-2 text-lg font-bold tracking-tight text-white">{value}</p>
-      <p className="text-[11px] text-white/45">{label}</p>
-    </div>
-  );
-}
-
-function WalletLedger({
-  title,
-  entries,
-}: {
-  title: string;
-  entries: Array<{ id: string; type: string; amount_usdt: number; balance_after: number }>;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
-      <p className="text-[11px] font-medium text-white/45">{title}</p>
-      {entries.length === 0 && <p className="mt-1 text-[11px] text-white/30">No entries yet.</p>}
-      <div className="mt-1.5 space-y-1">
-        {entries.map((e) => (
-          <div key={e.id} className="flex items-center justify-between text-[11px]">
-            <span className="text-white/50">{e.type}</span>
-            <span className={e.amount_usdt < 0 ? "text-red-300" : "text-emerald-300"}>
-              {e.amount_usdt >= 0 ? "+" : ""}
-              {formatUsdt(e.amount_usdt)} → {formatUsdt(e.balance_after)}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export function AdminView() {
-  const { actions } = useQuestify();
+  const { config, actions } = useQuestify();
   const { haptic } = useTelegram();
   const [data, setData] = useState<AdminData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [panel, setPanel] = useState<Panel>("overview");
-
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<AdminUser[]>([]);
-  const [selected, setSelected] = useState<AdminUser | null>(null);
-  const [adjustCoins, setAdjustCoins] = useState("");
-  const [adjustReason, setAdjustReason] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const [broadcastMsg, setBroadcastMsg] = useState("");
-  const [broadcastProgress, setBroadcastProgress] = useState<string | null>(null);
+  const [panel, setPanel] = useState<Panel>("payouts");
   const [txHashes, setTxHashes] = useState<Record<string, string>>({});
-  const [settingEdits, setSettingEdits] = useState<Record<string, string>>({});
-  const [savingKey, setSavingKey] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    const res = await adminFetch<AdminData>("/api/admin");
+  const toast = useCallback(
+    (title: string, message: string, kind: "success" | "error" = "success") =>
+      actions.pushToast({ kind, title, message }),
+    [actions],
+  );
+
+  const fetchData = useCallback(() => adminFetch<AdminData>("/api/admin"), []);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const res = await fetchData();
     if (!res.ok || !res.data) {
       setError(res.error ?? "failed");
       setLoading(false);
@@ -196,12 +118,12 @@ export function AdminView() {
     setError(null);
     setData(res.data);
     setLoading(false);
-  }, []);
+  }, [fetchData]);
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      const res = await adminFetch<AdminData>("/api/admin");
+      const res = await fetchData();
       if (cancelled) return;
       if (!res.ok || !res.data) {
         setError(res.error ?? "failed");
@@ -216,58 +138,7 @@ export function AdminView() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const toast = useCallback(
-    (title: string, message: string, kind: "success" | "error" = "success") =>
-      actions.pushToast({ kind, title, message }),
-    [actions],
-  );
-
-  const runLookup = async () => {
-    if (!query.trim()) return;
-    haptic("light");
-    const res = await adminFetch<AdminUser[]>("/api/admin", {
-      method: "POST",
-      body: JSON.stringify({ action: "lookup_user", query: query.trim() }),
-    });
-    if (!res.ok) return toast("Lookup failed", res.error ?? "failed", "error");
-    setResults(res.data ?? []);
-  };
-
-  const toggleBan = async (user: AdminUser) => {
-    haptic("medium");
-    const res = await adminFetch("/api/admin", {
-      method: "POST",
-      body: JSON.stringify({ action: "update_user", userId: user.id, is_banned: !user.is_banned }),
-    });
-    if (!res.ok) return toast("Update failed", res.error ?? "failed", "error");
-    toast(user.is_banned ? "User unbanned" : "User banned", user.username ?? "user");
-    setSelected({ ...user, is_banned: !user.is_banned });
-    setResults((prev) => prev.map((u) => (u.id === user.id ? { ...u, is_banned: !u.is_banned } : u)));
-  };
-
-  const applyAdjustment = async () => {
-    if (!selected) return;
-    const delta = Number.parseInt(adjustCoins, 10);
-    if (!Number.isFinite(delta) || delta === 0) return toast("Enter a coin delta", "e.g. 1000 or -500", "error");
-    setBusy(true);
-    haptic("medium");
-    const res = await adminFetch("/api/admin", {
-      method: "POST",
-      body: JSON.stringify({
-        action: "adjust_balance",
-        userId: selected.id,
-        delta_coins: delta,
-        reason: adjustReason.trim() || undefined,
-      }),
-    });
-    setBusy(false);
-    if (!res.ok) return toast("Adjustment failed", res.error ?? "failed", "error");
-    toast("Balance adjusted", `${delta > 0 ? "+" : ""}${delta} coins`);
-    setAdjustCoins("");
-    setAdjustReason("");
-  };
+  }, [fetchData]);
 
   const updateWithdrawal = async (w: AdminWithdrawal, status: "paid" | "rejected") => {
     const txHash = (txHashes[w.id] ?? "").trim();
@@ -285,7 +156,7 @@ export function AdminView() {
       }),
     });
     if (!res.ok) return toast("Update failed", res.error ?? "failed", "error");
-    toast(`Withdrawal ${status}`, `${formatUsdt(w.amount_usdt)} USDT`);
+    toast(`Withdrawal ${status}`, `${formatUsdt(w.net_amount_usdt ?? w.amount_usdt)} USDT`);
     setData((prev) =>
       prev
         ? { ...prev, withdrawals: prev.withdrawals.map((x) => (x.id === w.id ? { ...x, status } : x)) }
@@ -293,72 +164,19 @@ export function AdminView() {
     );
   };
 
-  const saveSetting = async (field: SettingField) => {
-    const current = data?.settings?.find((s) => s.key === field.key)?.value;
-    const raw = settingEdits[field.key];
-    if (raw === undefined) return;
-    let value: unknown;
-    if (field.kind === "number") {
-      value = Number(raw);
-      if (!Number.isFinite(value)) return toast("Invalid value", `${field.label} must be a number`, "error");
-    } else if (field.kind === "numbers") {
-      value = raw
-        .split(",")
-        .map((p) => Number(p.trim()))
-        .filter((n) => Number.isFinite(n));
-      if ((value as number[]).length === 0)
-        return toast("Invalid value", "Enter comma-separated numbers", "error");
-    } else {
-      value = raw.trim();
-      if (!value) return toast("Invalid value", "Value cannot be empty", "error");
-    }
-    if (JSON.stringify(value) === JSON.stringify(current)) return;
-    setSavingKey(field.key);
+  const toggleBan = async (user: AdminUser) => {
+    haptic("medium");
     const res = await adminFetch("/api/admin", {
       method: "POST",
-      body: JSON.stringify({ action: "update_settings", key: field.key, value }),
+      body: JSON.stringify({ action: "update_user", userId: user.id, is_banned: !user.is_banned }),
     });
-    setSavingKey(null);
-    if (!res.ok) return toast("Save failed", res.error ?? "failed", "error");
-    toast("Setting saved", field.label);
+    if (!res.ok) return toast("Update failed", res.error ?? "failed", "error");
+    toast(user.is_banned ? "User unbanned" : "User banned", user.username ?? "user");
     setData((prev) =>
       prev
-        ? {
-            ...prev,
-            settings: (prev.settings ?? []).map((s) =>
-              s.key === field.key ? { ...s, value } : s,
-            ),
-          }
+        ? { ...prev, users: prev.users.map((u) => (u.id === user.id ? { ...u, is_banned: !u.is_banned } : u)) }
         : prev,
     );
-  };
-
-  const sendBroadcast = async () => {
-    const message = broadcastMsg.trim();
-    if (!message) return toast("Message required", "Type a broadcast first", "error");
-    setBusy(true);
-    let offset = 0;
-    let sent = 0;
-    let done = false;
-    while (!done) {
-      const res = await adminFetch<{ processed: number; sent: number; nextOffset: number; done: boolean }>(
-        "/api/admin",
-        { method: "POST", body: JSON.stringify({ action: "broadcast", message, offset }) },
-      );
-      if (!res.ok || !res.data) {
-        setBusy(false);
-        return toast("Broadcast failed", res.error ?? "failed", "error");
-      }
-      offset = res.data.nextOffset;
-      sent += res.data.sent;
-      done = res.data.done;
-      setBroadcastProgress(`Sent to ${sent} users…`);
-    }
-    setBusy(false);
-    setBroadcastProgress(null);
-    setBroadcastMsg("");
-    haptic("heavy");
-    toast("Broadcast complete", `${sent} messages delivered`);
   };
 
   const pending = useMemo(
@@ -366,50 +184,19 @@ export function AdminView() {
     [data],
   );
 
-  const PANELS: { key: Panel; label: string }[] = [
-    { key: "overview", label: "Overview" },
-    { key: "users", label: "Users" },
-    { key: "withdrawals", label: "Payouts" },
-    { key: "broadcast", label: "Broadcast" },
-    { key: "settings", label: "Settings" },
-  ];
-
   return (
     <div className="px-4 pb-4 pt-[max(0.75rem,env(safe-area-inset-top))]">
       <div className="flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-white">
-          <ShieldCheck className="h-5 w-5 text-neon-orange" /> Admin
+          <ShieldCheck className="h-5 w-5 text-neon-orange" /> Quick Panel
         </h1>
         <button
-          onClick={() => {
-            setLoading(true);
-            void load();
-          }}
+          onClick={() => void refresh()}
           className="grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.03] text-white/60 transition active:scale-95"
           aria-label="Refresh"
         >
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </button>
-      </div>
-
-      <div className="mt-3 flex gap-1.5 overflow-x-auto pb-0.5">
-        {PANELS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => {
-              haptic("light");
-              setPanel(p.key);
-            }}
-            className={cn(
-              "relative shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition",
-              panel === p.key
-                ? "border-neon-orange/50 bg-neon-orange/15 text-white"
-                : "border-white/10 bg-white/[0.03] text-white/50",
-            )}
-          >
-            {p.label}
-          </button>
-        ))}
       </div>
 
       {error && (
@@ -418,259 +205,154 @@ export function AdminView() {
         </div>
       )}
 
+      {data && (
+        <div className="mt-3 grid grid-cols-2 gap-2.5">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
+            <Coins className="h-4 w-4 text-emerald-300" />
+            <p className="mt-2 text-lg font-bold tracking-tight text-white">
+              {formatUsdt(data.wallets?.owner.balance ?? 0)}
+            </p>
+            <p className="text-[11px] text-white/45">Owner wallet (USDT)</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
+            <Megaphone className="h-4 w-4 text-neon-cyan" />
+            <p className="mt-2 text-lg font-bold tracking-tight text-white">
+              {formatUsdt(data.wallets?.marketing.balance ?? 0)}
+            </p>
+            <p className="text-[11px] text-white/45">Marketing wallet (USDT)</p>
+          </div>
+        </div>
+      )}
+
       {loading && !data ? (
         <div className="mt-4 grid place-items-center py-16">
           <RefreshCw className="h-5 w-5 animate-spin text-neon-orange" />
         </div>
       ) : data ? (
-        <motion.div
-          key={panel}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2 }}
-          className="mt-4"
-        >
-          {panel === "overview" && (
-            <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2.5">
-              <StatCard label="Total users" value={String(data.stats.totalUsers)} Icon={Users} tint="text-neon-cyan" />
-              <StatCard
-                label="Tasks completed"
-                value={String(data.stats.totalTasksCompleted)}
-                Icon={CheckCircle2}
-                tint="text-emerald-300"
-              />
-              <StatCard
-                label="Pending payouts"
-                value={String(data.stats.pendingWithdrawals)}
-                Icon={Gauge}
-                tint="text-amber-300"
-              />
-              <StatCard
-                label="Total paid out"
-                value={`${formatUsdt(data.stats.totalPaidOut)}`}
-                Icon={Coins}
-                tint="text-neon-orange"
-              />
-              <StatCard
-                label="Owner wallet"
-                value={`${formatUsdt(data.wallets?.owner.balance ?? 0)}`}
-                Icon={Coins}
-                tint="text-emerald-300"
-              />
-              <StatCard
-                label="Marketing wallet"
-                value={`${formatUsdt(data.wallets?.marketing.balance ?? 0)}`}
-                Icon={Megaphone}
-                tint="text-neon-cyan"
-              />
-            </div>
-            <WalletLedger title="Owner wallet · recent" entries={data.wallets?.owner.entries ?? []} />
-            <WalletLedger title="Marketing wallet · recent" entries={data.wallets?.marketing.entries ?? []} />
-            </div>
-          )}
+        <>
+          <div className="mt-4 flex gap-1.5">
+            {PANELS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => {
+                  haptic("light");
+                  setPanel(p.key);
+                }}
+                className={cn(
+                  "relative rounded-full border px-3.5 py-1.5 text-xs font-semibold transition",
+                  panel === p.key
+                    ? "border-neon-orange/50 bg-neon-orange/15 text-white"
+                    : "border-white/10 bg-white/[0.03] text-white/50",
+                )}
+              >
+                {p.label}
+                {p.key === "payouts" && pending.length > 0 && (
+                  <span className="ml-1.5 rounded-full bg-amber-400/25 px-1.5 text-[10px] text-amber-100">
+                    {pending.length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
 
-          {panel === "users" && (
-            <div>
-              <div className="flex gap-2">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && void runLookup()}
-                  placeholder="Search username or telegram id"
-                  className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none"
-                />
-                <button
-                  onClick={() => void runLookup()}
-                  className="grid h-[42px] w-[42px] place-items-center rounded-xl bg-gradient-to-br from-neon-orange to-amber-500 text-black transition active:scale-95"
-                  aria-label="Search"
-                >
-                  <Search className="h-4 w-4" />
-                </button>
-              </div>
-
-              {selected && (
-                <div className="mt-3 rounded-2xl border border-neon-orange/30 bg-neon-orange/[0.06] p-3.5">
-                  <div className="flex items-center justify-between">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-white">
-                        {selected.username ?? selected.first_name ?? "user"}
+          <motion.div
+            key={panel}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="mt-4"
+          >
+            {panel === "payouts" && (
+              <div className="space-y-2.5">
+                {pending.length === 0 && (
+                  <p className="py-8 text-center text-xs text-white/40">No pending payouts.</p>
+                )}
+                {pending.map((w) => (
+                  <div key={w.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-white">
+                        {formatUsdt(w.net_amount_usdt ?? w.amount_usdt)} USDT
                       </p>
-                      <p className="text-[11px] text-white/45">
-                        {formatCoins(selected.coins)} coins · {formatUsdt(selected.usdt_balance)} USDT
-                      </p>
+                      <span className="text-[11px] text-white/45">
+                        {w.network} · fee {formatUsdt(w.fee_usdt ?? 0)}
+                      </span>
                     </div>
-                    <button
-                      onClick={() => void toggleBan(selected)}
-                      className={cn(
-                        "flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold",
-                        selected.is_banned
-                          ? "border-emerald-400/40 text-emerald-300"
-                          : "border-red-500/40 text-red-300",
-                      )}
-                    >
-                      <Ban className="h-3 w-3" /> {selected.is_banned ? "Unban" : "Ban"}
-                    </button>
-                  </div>
-                  <div className="mt-3 flex gap-2">
+                    <p className="mt-1 truncate text-[11px] text-white/40">
+                      {w.profiles?.username ?? "user"} · {w.address}
+                    </p>
                     <input
-                      value={adjustCoins}
-                      onChange={(e) => setAdjustCoins(e.target.value)}
-                      inputMode="numeric"
-                      placeholder="± coins"
-                      className="w-24 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none"
+                      value={txHashes[w.id] ?? ""}
+                      onChange={(e) => setTxHashes((prev) => ({ ...prev, [w.id]: e.target.value }))}
+                      placeholder="On-chain tx hash (required to approve)"
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 font-mono text-[11px] text-white placeholder:text-white/30 focus:outline-none"
                     />
-                    <input
-                      value={adjustReason}
-                      onChange={(e) => setAdjustReason(e.target.value)}
-                      placeholder="reason (optional)"
-                      className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none"
-                    />
-                    <button
-                      onClick={() => void applyAdjustment()}
-                      disabled={busy}
-                      className="rounded-xl bg-neon-orange px-3 py-2 text-xs font-bold text-black transition active:scale-95 disabled:opacity-50"
-                    >
-                      Apply
-                    </button>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={() => void updateWithdrawal(w, "paid")}
+                        className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-emerald-500/20 py-2 text-xs font-bold text-emerald-300 transition active:scale-95"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Approve
+                      </button>
+                      <button
+                        onClick={() => void updateWithdrawal(w, "rejected")}
+                        className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-red-500/20 py-2 text-xs font-bold text-red-300 transition active:scale-95"
+                      >
+                        <XCircle className="h-3.5 w-3.5" /> Reject
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                ))}
+              </div>
+            )}
 
-              <div className="mt-3 space-y-2">
-                {(results.length ? results : data.users.slice(0, 25)).map((u) => (
-                  <button
+            {panel === "users" && (
+              <div className="space-y-2">
+                <p className="flex items-center gap-1.5 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-white/45">
+                  <Gauge className="h-3.5 w-3.5 text-neon-orange" />
+                  {data.stats.totalUsers.toLocaleString()} users · recent first. Search &amp; full
+                  edits live in the control center.
+                </p>
+                {data.users.slice(0, 30).map((u) => (
+                  <div
                     key={u.id}
-                    onClick={() => setSelected(u)}
-                    className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-left transition active:scale-[0.99]"
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3"
                   >
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium text-white">
                         {u.username ?? u.first_name ?? "anon"}
-                        {u.is_banned && <span className="ml-2 text-[10px] font-bold text-red-400">BANNED</span>}
+                        {u.is_banned && (
+                          <span className="ml-2 text-[10px] font-bold text-red-400">BANNED</span>
+                        )}
                       </p>
                       <p className="text-[11px] text-white/45">
-                        {formatCoins(u.coins)} coins · {formatUsdt(u.usdt_balance)} USDT · trust {u.trust_score}
+                        {formatCoins(u.coins)} coins · {formatUsdt(u.usdt_balance)} USDT · trust{" "}
+                        {u.trust_score}
                       </p>
                     </div>
-                    <span className="text-[10px] text-white/30">{u.telegram_id ?? "—"}</span>
-                  </button>
+                    <button
+                      onClick={() => void toggleBan(u)}
+                      className={cn(
+                        "flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition active:scale-95",
+                        u.is_banned
+                          ? "border-emerald-400/40 text-emerald-300"
+                          : "border-red-500/40 text-red-300",
+                      )}
+                    >
+                      {u.is_banned ? <UserCheck className="h-3 w-3" /> : <Ban className="h-3 w-3" />}
+                      {u.is_banned ? "Unban" : "Ban"}
+                    </button>
+                  </div>
                 ))}
-                {results.length === 0 && query && (
-                  <p className="py-6 text-center text-xs text-white/40">No users found.</p>
-                )}
               </div>
-            </div>
-          )}
+            )}
+          </motion.div>
 
-          {panel === "withdrawals" && (
-            <div className="space-y-2">
-              {pending.length === 0 && (
-                <p className="py-8 text-center text-xs text-white/40">No pending payouts.</p>
-              )}
-              {pending.map((w) => (
-                <div key={w.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold text-white">
-                      {formatUsdt(w.net_amount_usdt ?? w.amount_usdt)} USDT payout
-                    </p>
-                    <span className="text-[11px] text-white/45">
-                      {w.network} · gross {formatUsdt(w.amount_usdt)} · fee {formatUsdt(w.fee_usdt ?? 0)}
-                    </span>
-                  </div>
-                  <p className="mt-1 truncate text-[11px] text-white/40">
-                    {w.profiles?.username ?? "user"} · {w.address}
-                  </p>
-                  <input
-                    value={txHashes[w.id] ?? ""}
-                    onChange={(e) => setTxHashes((prev) => ({ ...prev, [w.id]: e.target.value }))}
-                    placeholder="On-chain tx hash (required to approve)"
-                    className="mt-2 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] text-white placeholder:text-white/30 focus:outline-none"
-                  />
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      onClick={() => void updateWithdrawal(w, "paid")}
-                      className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-emerald-500/20 py-2 text-xs font-bold text-emerald-300 transition active:scale-95"
-                    >
-                      <CheckCircle2 className="h-3.5 w-3.5" /> Approve
-                    </button>
-                    <button
-                      onClick={() => void updateWithdrawal(w, "rejected")}
-                      className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-red-500/20 py-2 text-xs font-bold text-red-300 transition active:scale-95"
-                    >
-                      <XCircle className="h-3.5 w-3.5" /> Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {panel === "broadcast" && (
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
-              <p className="flex items-center gap-1.5 text-sm font-semibold text-white">
-                <Megaphone className="h-4 w-4 text-neon-orange" /> Broadcast to all users
-              </p>
-              <textarea
-                value={broadcastMsg}
-                onChange={(e) => setBroadcastMsg(e.target.value)}
-                rows={5}
-                placeholder="Write an announcement…"
-                className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-white placeholder:text-white/30 focus:outline-none"
-              />
-              <button
-                onClick={() => void sendBroadcast()}
-                disabled={busy}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-neon-orange to-amber-500 py-2.5 text-sm font-bold text-black transition active:scale-[0.99] disabled:opacity-50"
-              >
-                <Send className="h-4 w-4" /> {busy ? broadcastProgress ?? "Sending…" : "Send broadcast"}
-              </button>
-            </div>
-          )}
-
-          {panel === "settings" && (
-            <div className="space-y-3">
-              <p className="text-[11px] text-white/45">
-                Business rules live in the database — changes take effect on the next request,
-                no redeploy. Amounts are read server-side and are authoritative.
-              </p>
-              {SETTING_FIELDS.map((field) => {
-                const current = data.settings?.find((s) => s.key === field.key)?.value;
-                const display =
-                  settingEdits[field.key] ??
-                  (Array.isArray(current) ? current.join(", ") : current === undefined ? "" : String(current));
-                return (
-                  <div key={field.key} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
-                    <label className="text-[11px] font-medium text-white/70">{field.label}</label>
-                    {field.hint && <span className="ml-1 text-[10px] text-white/35">({field.hint})</span>}
-                    <div className="mt-2 flex gap-2">
-                      <input
-                        value={display}
-                        onChange={(e) =>
-                          setSettingEdits((prev) => ({ ...prev, [field.key]: e.target.value }))
-                        }
-                        inputMode={field.kind === "text" ? "text" : "decimal"}
-                        className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none"
-                      />
-                      <button
-                        onClick={() => void saveSetting(field)}
-                        disabled={savingKey === field.key}
-                        className="rounded-xl bg-gradient-to-br from-neon-orange to-amber-500 px-3 text-xs font-bold text-black transition active:scale-95 disabled:opacity-50"
-                      >
-                        {savingKey === field.key ? "…" : "Save"}
-                      </button>
-                    </div>
-                    {current === undefined && (
-                      <p className="mt-1 text-[10px] text-amber-300/70">
-                        Not in DB yet — saving will create it.
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </motion.div>
+          <p className="mt-4 text-center text-[10px] leading-relaxed text-white/30">
+            Full control room (users, tasks, settings, broadcast, audit):{" "}
+            <span className="font-mono text-white/45">{config.appUrl}/mcc</span> — open it in a
+            browser and sign in with Telegram.
+          </p>
+        </>
       ) : null}
     </div>
   );
