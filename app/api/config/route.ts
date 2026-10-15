@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { envConfig, type PublicConfig } from "@/lib/config";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { loadSettings } from "@/lib/settings";
 
 /**
  * Public runtime configuration. Base values come from build-time env vars; a row
@@ -43,9 +44,31 @@ export async function GET() {
       }
     }
 
+    // Economics (commission, fees, coin rate, schedules, trust threshold,
+    // leaderboard labels) come from the same platform_settings table via the
+    // typed loader, so the admin panel can retune them without a redeploy.
+    const settings = await loadSettings(admin);
+    const economics: Partial<PublicConfig> = {
+      minWithdrawalUsdt: settings.minWithdrawalUsdt,
+      coinToUsdtRate: settings.coinToUsdtRate,
+      withdrawalFees: {
+        BEP20: settings.withdrawalFeeBep20,
+        TON: settings.withdrawalFeeTon,
+      },
+      checkinRewardSchedule: settings.checkinRewardSchedule,
+      checkinMultiplierSchedule: settings.checkinMultiplierSchedule,
+      levelCoinsPerLevel: settings.levelCoinsPerLevel,
+      trustThresholdForWithdrawal: settings.trustThresholdForWithdrawal,
+      leaderboard: {
+        seasonLabel: settings.leaderboardSeasonLabel,
+        resetLabel: settings.leaderboardResetLabel,
+        rewardNote: settings.leaderboardRewardNote,
+      },
+    };
+
     return NextResponse.json({
       ok: true,
-      data: { ...base, ...overrides } satisfies PublicConfig,
+      data: { ...base, ...overrides, ...economics } satisfies PublicConfig,
     });
   } catch (err) {
     console.error("[questify] config error", err);
