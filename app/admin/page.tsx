@@ -19,12 +19,18 @@ interface AdminStats {
   platformLiquidity: number;
 }
 
+interface WalletView {
+  balance: number;
+  entries: Array<Record<string, unknown>>;
+}
+
 interface AdminData {
   stats: AdminStats;
   users: Array<Record<string, unknown>>;
   tasks: Array<Record<string, unknown>>;
   withdrawals: Array<Record<string, unknown>>;
   actions: Array<Record<string, unknown>>;
+  wallets?: { owner: WalletView; marketing: WalletView };
 }
 
 type AuthState = "checking" | "ready" | "outside-telegram" | "error";
@@ -162,13 +168,25 @@ export default function AdminPage() {
             ))}
           </div>
           {tab === "stats" && (
-            <div className="grid grid-cols-2 gap-3">
-              <StatCard label="Total Users" value={data.stats.totalUsers} />
-              <StatCard label="Tasks Completed" value={data.stats.totalTasksCompleted} />
-              <StatCard label="Pending Withdrawals" value={data.stats.pendingWithdrawals} />
-              <StatCard label="Total Paid Out" value={`${formatUsdt(data.stats.totalPaidOut)} USDT`} />
-              <StatCard label="Total Active Users" value={data.stats.totalActiveUsers} />
-              <StatCard label="Platform Liquidity" value={`${formatUsdt(data.stats.platformLiquidity)} USDT`} />
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <StatCard label="Total Users" value={data.stats.totalUsers} />
+                <StatCard label="Tasks Completed" value={data.stats.totalTasksCompleted} />
+                <StatCard label="Pending Withdrawals" value={data.stats.pendingWithdrawals} />
+                <StatCard label="Total Paid Out" value={`${formatUsdt(data.stats.totalPaidOut)} USDT`} />
+                <StatCard label="Total Active Users" value={data.stats.totalActiveUsers} />
+                <StatCard label="Platform Liquidity" value={`${formatUsdt(data.stats.platformLiquidity)} USDT`} />
+                <StatCard
+                  label="Owner Wallet"
+                  value={`${formatUsdt(data.wallets?.owner.balance ?? 0)} USDT`}
+                />
+                <StatCard
+                  label="Marketing Wallet"
+                  value={`${formatUsdt(data.wallets?.marketing.balance ?? 0)} USDT`}
+                />
+              </div>
+              <WalletLedger title="Owner wallet · recent entries" entries={data.wallets?.owner.entries ?? []} />
+              <WalletLedger title="Marketing wallet · recent entries" entries={data.wallets?.marketing.entries ?? []} />
             </div>
           )}
           {tab === "tasks" && <TasksManager tasks={data.tasks} onRefresh={refresh} />}
@@ -194,6 +212,32 @@ function StatCard({ label, value }: { label: string; value: unknown }) {
     <div className="rounded-lg border border-white/10 p-4">
       <div className="text-xs text-white/60">{label}</div>
       <div className="text-lg font-semibold">{value as React.ReactNode}</div>
+    </div>
+  );
+}
+
+function WalletLedger({
+  title,
+  entries,
+}: {
+  title: string;
+  entries: Array<Record<string, unknown>>;
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 p-3">
+      <div className="mb-2 text-xs text-white/60">{title}</div>
+      {entries.length === 0 && <div className="text-xs text-white/40">No entries yet.</div>}
+      <div className="space-y-1">
+        {entries.map((e) => (
+          <div key={String(e.id)} className="flex justify-between text-xs">
+            <span className="text-white/60">{String(e.type)}</span>
+            <span className={Number(e.amount_usdt) < 0 ? "text-red-300" : "text-emerald-300"}>
+              {Number(e.amount_usdt) >= 0 ? "+" : ""}
+              {formatUsdt(Number(e.amount_usdt))} → {formatUsdt(Number(e.balance_after))}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -237,6 +281,7 @@ function TasksManager({
         <div className="flex gap-2">
           <input className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1" type="number" placeholder="Coins" value={(form.reward_coins as number) || 0} onChange={(e) => setForm({ ...form, reward_coins: Number(e.target.value) })} />
           <input className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1" type="number" step="0.01" placeholder="USDT" value={(form.reward_usdt as number) || 0} onChange={(e) => setForm({ ...form, reward_usdt: Number(e.target.value) })} />
+          <input className="bg-black/30 border border-white/10 rounded px-2 py-1 flex-1" type="number" step="0.01" placeholder="Owner margin (USDT)" value={(form.margin_usdt as number) || 0} onChange={(e) => setForm({ ...form, margin_usdt: Number(e.target.value) })} />
         </div>
         <button disabled={busy} className="px-3 py-1 rounded bg-orange-600 disabled:opacity-50" onClick={submit}>{editing ? "Update" : "Add"}</button>
       </div>
@@ -290,8 +335,12 @@ function WithdrawalsManager({
         <div key={w.id as string} className="rounded-lg border border-white/10 p-3 space-y-2">
           <div className="flex justify-between items-center">
             <div>
-              <div className="font-medium">{formatUsdt(Number(w.amount_usdt))} USDT via {String(w.network)}</div>
-              <div className="text-xs text-white/60">User: {String(((w.profiles as Record<string, unknown>)?.username) || w.user_id)} · Status: {String(w.status)}</div>
+              <div className="font-medium">
+                {formatUsdt(Number(w.net_amount_usdt ?? w.amount_usdt))} USDT payout via {String(w.network)}
+              </div>
+              <div className="text-xs text-white/60">
+                Gross {formatUsdt(Number(w.amount_usdt))} · fee {formatUsdt(Number(w.fee_usdt ?? 0))} · User: {String(((w.profiles as Record<string, unknown>)?.username) || w.user_id)} · Status: {String(w.status)}
+              </div>
               <div className="text-xs text-white/40 truncate">{String(w.address)}</div>
             </div>
             <div className="flex gap-2">

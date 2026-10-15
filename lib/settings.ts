@@ -20,8 +20,23 @@ export interface RateLimitRule {
   window_seconds: number;
 }
 
+/** A single referral milestone: `bonus_usdt` paid once `referral_count` is reached. */
+export interface MilestoneRule {
+  referralCount: number;
+  bonusUsdt: number;
+}
+
 export interface Settings {
+  /** @deprecated replaced by the tiered commission keys below (dual-wallet model). */
   referralCommissionPct: number;
+  ownerWalletSplitPct: number;
+  marketingWalletSplitPct: number;
+  referralTier1CommissionPct: number;
+  referralTier2CommissionPct: number;
+  referralInstantBonusCoins: number;
+  referralInstantBonusUsdt: number;
+  referralBonusMinTasks: number;
+  referralMilestoneRules: MilestoneRule[];
   referralSignupRewardCoins: number;
   referralSignupRewardUsdt: number;
   coinToUsdtRate: number;
@@ -44,6 +59,17 @@ export interface Settings {
 /** Mirror of the seeds in supabase/schema.sql + 004_money_safety.sql. */
 export const SETTINGS_DEFAULTS: Settings = {
   referralCommissionPct: 0.1,
+  ownerWalletSplitPct: 0.95,
+  marketingWalletSplitPct: 0.05,
+  referralTier1CommissionPct: 0.03,
+  referralTier2CommissionPct: 0.02,
+  referralInstantBonusCoins: 150,
+  referralInstantBonusUsdt: 0.03,
+  referralBonusMinTasks: 3,
+  referralMilestoneRules: [
+    { referralCount: 5, bonusUsdt: 1 },
+    { referralCount: 25, bonusUsdt: 5 },
+  ],
   referralSignupRewardCoins: 150,
   referralSignupRewardUsdt: 0.03,
   coinToUsdtRate: 0.0002,
@@ -110,12 +136,52 @@ function parseRateLimits(value: unknown): Record<string, RateLimitRule> {
   return out;
 }
 
+function parseMilestoneRules(value: unknown): MilestoneRule[] {
+  if (!Array.isArray(value)) return SETTINGS_DEFAULTS.referralMilestoneRules;
+  const out: MilestoneRule[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const count = num((entry as Record<string, unknown>).referral_count, NaN);
+    const bonus = num((entry as Record<string, unknown>).bonus_usdt, NaN);
+    if (Number.isFinite(count) && Number.isFinite(bonus) && count > 0 && bonus > 0) {
+      out.push({ referralCount: Math.trunc(count), bonusUsdt: bonus });
+    }
+  }
+  return out.length > 0 ? out : SETTINGS_DEFAULTS.referralMilestoneRules;
+}
+
 /** Coerce raw `platform_settings` rows into a typed Settings object. */
 export function parseSettings(rows: Array<{ key: string; value: unknown }>): Settings {
   const map = new Map(rows.map((r) => [r.key, r.value]));
   const d = SETTINGS_DEFAULTS;
   return {
     referralCommissionPct: num(map.get("referral_commission_pct"), d.referralCommissionPct),
+    ownerWalletSplitPct: num(map.get("owner_wallet_split_pct"), d.ownerWalletSplitPct),
+    marketingWalletSplitPct: num(
+      map.get("marketing_wallet_split_pct"),
+      d.marketingWalletSplitPct,
+    ),
+    referralTier1CommissionPct: num(
+      map.get("referral_tier1_commission_pct"),
+      d.referralTier1CommissionPct,
+    ),
+    referralTier2CommissionPct: num(
+      map.get("referral_tier2_commission_pct"),
+      d.referralTier2CommissionPct,
+    ),
+    referralInstantBonusCoins: num(
+      map.get("referral_instant_bonus_coins"),
+      d.referralInstantBonusCoins,
+    ),
+    referralInstantBonusUsdt: num(
+      map.get("referral_instant_bonus_usdt"),
+      d.referralInstantBonusUsdt,
+    ),
+    referralBonusMinTasks: Math.max(
+      1,
+      num(map.get("referral_bonus_min_tasks"), d.referralBonusMinTasks),
+    ),
+    referralMilestoneRules: parseMilestoneRules(map.get("referral_milestone_rules")),
     referralSignupRewardCoins: num(
       map.get("referral_signup_reward_coins"),
       d.referralSignupRewardCoins,
