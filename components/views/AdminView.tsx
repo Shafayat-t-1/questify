@@ -42,6 +42,8 @@ interface AdminUser {
 interface AdminWithdrawal {
   id: string;
   amount_usdt: number;
+  fee_usdt?: number;
+  net_amount_usdt?: number;
   network: string;
   address: string;
   status: string;
@@ -54,11 +56,16 @@ interface AdminSetting {
   is_public: boolean | null;
   description: string | null;
 }
+interface AdminWallet {
+  balance: number;
+  entries: Array<{ id: string; type: string; amount_usdt: number; balance_after: number }>;
+}
 interface AdminData {
   stats: AdminStats;
   users: AdminUser[];
   withdrawals: AdminWithdrawal[];
   settings?: AdminSetting[];
+  wallets?: { owner: AdminWallet; marketing: AdminWallet };
 }
 
 type Panel = "overview" | "users" | "withdrawals" | "broadcast" | "settings";
@@ -71,7 +78,14 @@ interface SettingField {
 }
 
 const SETTING_FIELDS: SettingField[] = [
-  { key: "referral_commission_pct", label: "Referral commission (fraction)", kind: "number", hint: "0.1 = 10%" },
+  { key: "owner_wallet_split_pct", label: "Owner wallet split (fraction)", kind: "number", hint: "must sum to 1 with marketing" },
+  { key: "marketing_wallet_split_pct", label: "Marketing wallet split (fraction)", kind: "number" },
+  { key: "referral_tier1_commission_pct", label: "Tier-1 referral commission (fraction)", kind: "number", hint: "of task margin" },
+  { key: "referral_tier2_commission_pct", label: "Tier-2 referral commission (fraction)", kind: "number", hint: "of task margin" },
+  { key: "referral_instant_bonus_coins", label: "Instant referral bonus (coins)", kind: "number" },
+  { key: "referral_instant_bonus_usdt", label: "Instant referral bonus (USDT)", kind: "number" },
+  { key: "referral_bonus_min_tasks", label: "Min tasks before instant bonus", kind: "number" },
+  { key: "referral_commission_pct", label: "Referral commission (legacy, unused)", kind: "number", hint: "0.1 = 10%" },
   { key: "referral_signup_reward_coins", label: "Referral signup reward (coins)", kind: "number" },
   { key: "referral_signup_reward_usdt", label: "Referral signup reward (USDT)", kind: "number" },
   { key: "coin_to_usdt_rate", label: "Coin→USDT rate", kind: "number" },
@@ -121,6 +135,32 @@ function StatCard({
       <Icon className={cn("h-4 w-4", tint)} />
       <p className="mt-2 text-lg font-bold tracking-tight text-white">{value}</p>
       <p className="text-[11px] text-white/45">{label}</p>
+    </div>
+  );
+}
+
+function WalletLedger({
+  title,
+  entries,
+}: {
+  title: string;
+  entries: Array<{ id: string; type: string; amount_usdt: number; balance_after: number }>;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
+      <p className="text-[11px] font-medium text-white/45">{title}</p>
+      {entries.length === 0 && <p className="mt-1 text-[11px] text-white/30">No entries yet.</p>}
+      <div className="mt-1.5 space-y-1">
+        {entries.map((e) => (
+          <div key={e.id} className="flex items-center justify-between text-[11px]">
+            <span className="text-white/50">{e.type}</span>
+            <span className={e.amount_usdt < 0 ? "text-red-300" : "text-emerald-300"}>
+              {e.amount_usdt >= 0 ? "+" : ""}
+              {formatUsdt(e.amount_usdt)} → {formatUsdt(e.balance_after)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -391,6 +431,7 @@ export function AdminView() {
           className="mt-4"
         >
           {panel === "overview" && (
+            <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2.5">
               <StatCard label="Total users" value={String(data.stats.totalUsers)} Icon={Users} tint="text-neon-cyan" />
               <StatCard
@@ -411,6 +452,21 @@ export function AdminView() {
                 Icon={Coins}
                 tint="text-neon-orange"
               />
+              <StatCard
+                label="Owner wallet"
+                value={`${formatUsdt(data.wallets?.owner.balance ?? 0)}`}
+                Icon={Coins}
+                tint="text-emerald-300"
+              />
+              <StatCard
+                label="Marketing wallet"
+                value={`${formatUsdt(data.wallets?.marketing.balance ?? 0)}`}
+                Icon={Megaphone}
+                tint="text-neon-cyan"
+              />
+            </div>
+            <WalletLedger title="Owner wallet · recent" entries={data.wallets?.owner.entries ?? []} />
+            <WalletLedger title="Marketing wallet · recent" entries={data.wallets?.marketing.entries ?? []} />
             </div>
           )}
 
@@ -515,8 +571,12 @@ export function AdminView() {
               {pending.map((w) => (
                 <div key={w.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold text-white">{formatUsdt(w.amount_usdt)} USDT</p>
-                    <span className="text-[11px] text-white/45">{w.network}</span>
+                    <p className="text-sm font-semibold text-white">
+                      {formatUsdt(w.net_amount_usdt ?? w.amount_usdt)} USDT payout
+                    </p>
+                    <span className="text-[11px] text-white/45">
+                      {w.network} · gross {formatUsdt(w.amount_usdt)} · fee {formatUsdt(w.fee_usdt ?? 0)}
+                    </span>
                   </div>
                   <p className="mt-1 truncate text-[11px] text-white/40">
                     {w.profiles?.username ?? "user"} · {w.address}

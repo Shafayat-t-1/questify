@@ -70,6 +70,8 @@ export interface Task {
   duration_seconds: number;
   max_completions: number;
   completions: number;
+  /** Owner profit margin per completion, split into the two wallets. */
+  margin_usdt?: number;
   is_active: boolean;
   created_at: string;
   updated_at?: string;
@@ -102,7 +104,12 @@ export interface DailyCheckin {
 export interface Withdrawal {
   id: string;
   user_id: string;
+  /** Gross amount debited from the user's balance. */
   amount_usdt: number;
+  /** Fee collected into the owner wallet (0 on legacy rows). */
+  fee_usdt?: number;
+  /** Actual payout amount (amount_usdt - fee_usdt). */
+  net_amount_usdt?: number;
   network: "BEP20" | "TON";
   address: string;
   status: "pending" | "processing" | "paid" | "rejected";

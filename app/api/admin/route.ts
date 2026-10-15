@@ -19,6 +19,13 @@ const BROADCAST_BATCH = 150;
 /** Business `platform_settings` keys the admin panel may edit, with bounds. */
 const NUMERIC_SETTINGS: Record<string, { min: number; max: number }> = {
   referral_commission_pct: { min: 0, max: 1 },
+  owner_wallet_split_pct: { min: 0, max: 1 },
+  marketing_wallet_split_pct: { min: 0, max: 1 },
+  referral_tier1_commission_pct: { min: 0, max: 1 },
+  referral_tier2_commission_pct: { min: 0, max: 1 },
+  referral_instant_bonus_coins: { min: 0, max: 10_000_000 },
+  referral_instant_bonus_usdt: { min: 0, max: 10_000 },
+  referral_bonus_min_tasks: { min: 1, max: 10_000_000 },
   referral_signup_reward_coins: { min: 0, max: 10_000_000 },
   referral_signup_reward_usdt: { min: 0, max: 10_000 },
   coin_to_usdt_rate: { min: 0, max: 1000 },
@@ -45,6 +52,21 @@ function sanitizeSetting(key: unknown, value: unknown): { ok: true; value: unkno
   if (key === "rate_limits") {
     if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
     return { ok: true, value };
+  }
+
+  if (key === "referral_milestone_rules") {
+    if (!Array.isArray(value) || value.length > 50) return { ok: false };
+    const rules = value
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const count = boundedNumber((entry as Record<string, unknown>).referral_count, 1, 10_000_000);
+        const bonus = boundedNumber((entry as Record<string, unknown>).bonus_usdt, 0, 10_000);
+        if (count === null || bonus === null) return null;
+        return { referral_count: Math.trunc(count), bonus_usdt: bonus };
+      })
+      .filter((r): r is { referral_count: number; bonus_usdt: number } => r !== null);
+    if (rules.length !== value.length) return { ok: false };
+    return { ok: true, value: rules };
   }
 
   const bounds = NUMERIC_SETTINGS[key];
@@ -114,16 +136,40 @@ export async function GET(request: Request) {
   const { admin } = auth;
 
   try {
-    const [users, tasks, withdrawals, actions, settings] = await Promise.all([
-      admin.from("profiles").select("*").order("created_at", { ascending: false }).limit(100),
-      admin.from("tasks").select("*").order("created_at", { ascending: false }),
-      admin!
-        .from("withdrawals")
-        .select("*, profiles!withdrawals_user_id_fkey(username, telegram_id)")
-        .order("created_at", { ascending: false }),
-      admin.from("admin_actions").select("*").order("created_at", { ascending: false }).limit(50),
-      admin.from("platform_settings").select("key, value, is_public, description").order("key"),
+    const [users, tasks, withdrawals, actions, settings, ownerLedger, marketingLedger] =
+      await Promise.all([
+        admin.from("profiles").select("*").order("created_at", { ascending: false }).limit(100),
+        admin.from("tasks").select("*").order("created_at", { ascending: false }),
+        admin!
+          .from("withdrawals")
+          .select("*, profiles!withdrawals_user_id_fkey(username, telegram_id)")
+          .order("created_at", { ascending: false }),
+        admin.from("admin_actions").select("*").order("created_at", { ascending: false }).limit(50),
+        admin.from("platform_settings").select("key, value, is_public, description").order("key"),
+        admin
+          .from("owner_wallet_ledger")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(20),
+        admin
+          .from("marketing_wallet_ledger")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(20),
+      ]);
+
+    // Ledger-backed wallet balances (RPC sums every row; falls back to the
+    // recent entries when the wallet migration has not been applied yet).
+    const [ownerBalanceRes, marketingBalanceRes] = await Promise.all([
+      admin.rpc("owner_wallet_balance"),
+      admin.rpc("marketing_wallet_balance"),
     ]);
+    const sumEntries = (rows: Array<Record<string, unknown>> | null | undefined) =>
+      (rows ?? []).reduce((sum, r) => sum + Number(r.amount_usdt || 0), 0);
+    const ownerWalletBalance = Number(ownerBalanceRes?.data ?? sumEntries(ownerLedger.data));
+    const marketingWalletBalance = Number(
+      marketingBalanceRes?.data ?? sumEntries(marketingLedger.data),
+    );
 
     const { count: totalUsers } = await admin!
       .from("profiles")
@@ -161,6 +207,16 @@ export async function GET(request: Request) {
         withdrawals: withdrawals.data || [],
         actions: actions.data || [],
         settings: settings.data || [],
+        wallets: {
+          owner: {
+            balance: Number.isFinite(ownerWalletBalance) ? ownerWalletBalance : 0,
+            entries: ownerLedger.data || [],
+          },
+          marketing: {
+            balance: Number.isFinite(marketingWalletBalance) ? marketingWalletBalance : 0,
+            entries: marketingLedger.data || [],
+          },
+        },
       },
     });
   } catch (err) {
@@ -210,6 +266,7 @@ export async function POST(request: Request) {
               ? params.verification_rules
               : null,
           p_max_completions: boundedInt(params.max_completions, 0, 10_000_000),
+          p_margin_usdt: boundedNumber(params.margin_usdt, 0, 100_000),
         });
         if (error) throw error;
         return NextResponse.json({ ok: true, data });
