@@ -48,13 +48,47 @@ interface AdminWithdrawal {
   created_at: string;
   profiles?: { username?: string | null; telegram_id?: number | string | null };
 }
+interface AdminSetting {
+  key: string;
+  value: unknown;
+  is_public: boolean | null;
+  description: string | null;
+}
 interface AdminData {
   stats: AdminStats;
   users: AdminUser[];
   withdrawals: AdminWithdrawal[];
+  settings?: AdminSetting[];
 }
 
-type Panel = "overview" | "users" | "withdrawals" | "broadcast";
+type Panel = "overview" | "users" | "withdrawals" | "broadcast" | "settings";
+
+interface SettingField {
+  key: string;
+  label: string;
+  kind: "number" | "numbers" | "text";
+  hint?: string;
+}
+
+const SETTING_FIELDS: SettingField[] = [
+  { key: "referral_commission_pct", label: "Referral commission (fraction)", kind: "number", hint: "0.1 = 10%" },
+  { key: "referral_signup_reward_coins", label: "Referral signup reward (coins)", kind: "number" },
+  { key: "referral_signup_reward_usdt", label: "Referral signup reward (USDT)", kind: "number" },
+  { key: "coin_to_usdt_rate", label: "Coin→USDT rate", kind: "number" },
+  { key: "withdrawal_fee_bep20", label: "BEP-20 withdrawal fee (USDT)", kind: "number" },
+  { key: "withdrawal_fee_ton", label: "TON withdrawal fee (USDT)", kind: "number" },
+  { key: "checkin_reward_schedule", label: "Check-in rewards (7, comma-separated)", kind: "numbers" },
+  { key: "checkin_multiplier_schedule", label: "Check-in multipliers (7, comma-separated)", kind: "numbers" },
+  { key: "level_coins_per_level", label: "Coins per level", kind: "number" },
+  { key: "trust_score_task_delta", label: "Trust gain per task", kind: "number" },
+  { key: "trust_score_checkin_delta", label: "Trust gain per check-in", kind: "number" },
+  { key: "trust_score_cap", label: "Trust score cap", kind: "number" },
+  { key: "trust_threshold_for_withdrawal", label: "Min trust to withdraw", kind: "number" },
+  { key: "min_withdrawal_usdt", label: "Minimum withdrawal (USDT)", kind: "number" },
+  { key: "leaderboard_season_label", label: "Leaderboard season label", kind: "text" },
+  { key: "leaderboard_reset_label", label: "Leaderboard reset label", kind: "text" },
+  { key: "leaderboard_reward_note", label: "Leaderboard reward note", kind: "text" },
+];
 
 async function adminFetch<T>(
   path: string,
@@ -108,6 +142,9 @@ export function AdminView() {
 
   const [broadcastMsg, setBroadcastMsg] = useState("");
   const [broadcastProgress, setBroadcastProgress] = useState<string | null>(null);
+  const [txHashes, setTxHashes] = useState<Record<string, string>>({});
+  const [settingEdits, setSettingEdits] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await adminFetch<AdminData>("/api/admin");
@@ -193,16 +230,65 @@ export function AdminView() {
   };
 
   const updateWithdrawal = async (w: AdminWithdrawal, status: "paid" | "rejected") => {
+    const txHash = (txHashes[w.id] ?? "").trim();
+    if (status === "paid" && txHash.length < 4) {
+      return toast("Tx hash required", "Paste the on-chain transaction hash before approving", "error");
+    }
     haptic("medium");
     const res = await adminFetch("/api/admin", {
       method: "POST",
-      body: JSON.stringify({ action: "update_withdrawal", withdrawalId: w.id, status }),
+      body: JSON.stringify({
+        action: "update_withdrawal",
+        withdrawalId: w.id,
+        status,
+        tx_hash: txHash || undefined,
+      }),
     });
     if (!res.ok) return toast("Update failed", res.error ?? "failed", "error");
     toast(`Withdrawal ${status}`, `${formatUsdt(w.amount_usdt)} USDT`);
     setData((prev) =>
       prev
         ? { ...prev, withdrawals: prev.withdrawals.map((x) => (x.id === w.id ? { ...x, status } : x)) }
+        : prev,
+    );
+  };
+
+  const saveSetting = async (field: SettingField) => {
+    const current = data?.settings?.find((s) => s.key === field.key)?.value;
+    const raw = settingEdits[field.key];
+    if (raw === undefined) return;
+    let value: unknown;
+    if (field.kind === "number") {
+      value = Number(raw);
+      if (!Number.isFinite(value)) return toast("Invalid value", `${field.label} must be a number`, "error");
+    } else if (field.kind === "numbers") {
+      value = raw
+        .split(",")
+        .map((p) => Number(p.trim()))
+        .filter((n) => Number.isFinite(n));
+      if ((value as number[]).length === 0)
+        return toast("Invalid value", "Enter comma-separated numbers", "error");
+    } else {
+      value = raw.trim();
+      if (!value) return toast("Invalid value", "Value cannot be empty", "error");
+    }
+    if (JSON.stringify(value) === JSON.stringify(current)) return;
+    setSavingKey(field.key);
+    const res = await adminFetch("/api/admin", {
+      method: "POST",
+      body: JSON.stringify({ action: "update_settings", key: field.key, value }),
+    });
+    setSavingKey(null);
+    if (!res.ok) return toast("Save failed", res.error ?? "failed", "error");
+    toast("Setting saved", field.label);
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            settings: (prev.settings ?? []).map((s) =>
+              s.key === field.key ? { ...s, value } : s,
+            ),
+          }
         : prev,
     );
   };
@@ -245,6 +331,7 @@ export function AdminView() {
     { key: "users", label: "Users" },
     { key: "withdrawals", label: "Payouts" },
     { key: "broadcast", label: "Broadcast" },
+    { key: "settings", label: "Settings" },
   ];
 
   return (
@@ -434,6 +521,12 @@ export function AdminView() {
                   <p className="mt-1 truncate text-[11px] text-white/40">
                     {w.profiles?.username ?? "user"} · {w.address}
                   </p>
+                  <input
+                    value={txHashes[w.id] ?? ""}
+                    onChange={(e) => setTxHashes((prev) => ({ ...prev, [w.id]: e.target.value }))}
+                    placeholder="On-chain tx hash (required to approve)"
+                    className="mt-2 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] text-white placeholder:text-white/30 focus:outline-none"
+                  />
                   <div className="mt-3 flex gap-2">
                     <button
                       onClick={() => void updateWithdrawal(w, "paid")}
@@ -472,6 +565,49 @@ export function AdminView() {
               >
                 <Send className="h-4 w-4" /> {busy ? broadcastProgress ?? "Sending…" : "Send broadcast"}
               </button>
+            </div>
+          )}
+
+          {panel === "settings" && (
+            <div className="space-y-3">
+              <p className="text-[11px] text-white/45">
+                Business rules live in the database — changes take effect on the next request,
+                no redeploy. Amounts are read server-side and are authoritative.
+              </p>
+              {SETTING_FIELDS.map((field) => {
+                const current = data.settings?.find((s) => s.key === field.key)?.value;
+                const display =
+                  settingEdits[field.key] ??
+                  (Array.isArray(current) ? current.join(", ") : current === undefined ? "" : String(current));
+                return (
+                  <div key={field.key} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
+                    <label className="text-[11px] font-medium text-white/70">{field.label}</label>
+                    {field.hint && <span className="ml-1 text-[10px] text-white/35">({field.hint})</span>}
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={display}
+                        onChange={(e) =>
+                          setSettingEdits((prev) => ({ ...prev, [field.key]: e.target.value }))
+                        }
+                        inputMode={field.kind === "text" ? "text" : "decimal"}
+                        className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none"
+                      />
+                      <button
+                        onClick={() => void saveSetting(field)}
+                        disabled={savingKey === field.key}
+                        className="rounded-xl bg-gradient-to-br from-neon-orange to-amber-500 px-3 text-xs font-bold text-black transition active:scale-95 disabled:opacity-50"
+                      >
+                        {savingKey === field.key ? "…" : "Save"}
+                      </button>
+                    </div>
+                    {current === undefined && (
+                      <p className="mt-1 text-[10px] text-amber-300/70">
+                        Not in DB yet — saving will create it.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </motion.div>

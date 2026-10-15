@@ -265,28 +265,52 @@ function WithdrawalsManager({
   withdrawals: Array<Record<string, unknown>>;
   onRefresh: () => void;
 }) {
+  const [txHashes, setTxHashes] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
   const update = async (id: string, status: string) => {
-    await adminAction("update_withdrawal", { withdrawalId: id, status });
-    onRefresh();
+    const txHash = (txHashes[id] ?? "").trim();
+    if (status === "paid" && txHash.length < 4) {
+      setError("A tx hash is required before approving a payout.");
+      return;
+    }
+    setError(null);
+    try {
+      await adminAction("update_withdrawal", { withdrawalId: id, status, tx_hash: txHash || undefined });
+      onRefresh();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "failed");
+    }
   };
 
   return (
     <div className="space-y-2">
+      {error && <div className="rounded bg-red-900/40 border border-red-500/50 p-2 text-sm">{error}</div>}
       {withdrawals.map((w: Record<string, unknown>) => (
-        <div key={w.id as string} className="rounded-lg border border-white/10 p-3 flex justify-between items-center">
-          <div>
-            <div className="font-medium">{formatUsdt(Number(w.amount_usdt))} USDT via {String(w.network)}</div>
-            <div className="text-xs text-white/60">User: {String(((w.profiles as Record<string, unknown>)?.username) || w.user_id)} · Status: {String(w.status)}</div>
-            <div className="text-xs text-white/40 truncate">{String(w.address)}</div>
+        <div key={w.id as string} className="rounded-lg border border-white/10 p-3 space-y-2">
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="font-medium">{formatUsdt(Number(w.amount_usdt))} USDT via {String(w.network)}</div>
+              <div className="text-xs text-white/60">User: {String(((w.profiles as Record<string, unknown>)?.username) || w.user_id)} · Status: {String(w.status)}</div>
+              <div className="text-xs text-white/40 truncate">{String(w.address)}</div>
+            </div>
+            <div className="flex gap-2">
+              {String(w.status) === "pending" && (
+                <>
+                  <button className="px-2 py-1 border border-green-500/50 rounded text-xs" onClick={() => update(w.id as string, "paid")}>Approve</button>
+                  <button className="px-2 py-1 border border-red-500/50 rounded text-xs" onClick={() => update(w.id as string, "rejected")}>Reject</button>
+                </>
+              )}
+            </div>
           </div>
-          <div className="flex gap-2">
-            {String(w.status) === "pending" && (
-              <>
-                <button className="px-2 py-1 border border-green-500/50 rounded text-xs" onClick={() => update(w.id as string, "paid")}>Approve</button>
-                <button className="px-2 py-1 border border-red-500/50 rounded text-xs" onClick={() => update(w.id as string, "rejected")}>Reject</button>
-              </>
-            )}
-          </div>
+          {String(w.status) === "pending" && (
+            <input
+              className="bg-black/30 border border-white/10 rounded px-2 py-1 w-full text-xs"
+              placeholder="On-chain tx hash (required to approve)"
+              value={txHashes[w.id as string] ?? ""}
+              onChange={(e) => setTxHashes((prev) => ({ ...prev, [w.id as string]: e.target.value }))}
+            />
+          )}
         </div>
       ))}
     </div>

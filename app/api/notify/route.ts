@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { boundedString, isUuid } from "@/lib/validation";
+import { checkRateLimit, clientIp, rateLimitedResponse } from "@/lib/rate-limit";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const NOTIFY_SECRET = process.env.NOTIFY_SECRET ?? process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -24,6 +25,9 @@ export async function POST(request: Request) {
   if (provided !== NOTIFY_SECRET) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
+
+  const limited = await checkRateLimit(getSupabaseAdmin(), "notify", clientIp(request));
+  if (!limited.allowed) return rateLimitedResponse(limited);
 
   let body: { userId?: unknown; type?: unknown; message?: unknown };
   try {

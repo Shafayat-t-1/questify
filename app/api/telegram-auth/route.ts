@@ -3,6 +3,7 @@ import { signSession } from "@/lib/session";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyTelegramInitData, type TelegramUser } from "@/lib/telegram-auth";
 import { processReferral, type ReferralEventRecord, type ReferralRepo } from "@/lib/referral-server";
+import { checkRateLimit, clientIp, rateLimitedResponse } from "@/lib/rate-limit";
 import type { Profile, Wallet } from "@/lib/types";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -150,6 +151,11 @@ export async function POST(request: Request) {
           },
           { onConflict: "user_id,provider" },
         );
+
+      // Throttle referral attempts per account (and IP) before hitting
+      // `apply_referral`, so the referral engine cannot be brute-forced.
+      const limited = await checkRateLimit(admin, "referral", `${user.id}:${clientIp(request) ?? ""}`);
+      if (!limited.allowed) return rateLimitedResponse(limited);
 
       // Referral resolution is trust-ordered inside `processReferral`:
       // HMAC-verified initData start_param first, then the client-sent param

@@ -1,6 +1,7 @@
 import { supabase } from "./supabase";
 import { authHeaders, getSessionToken } from "./session-client";
 import { envConfig, type PublicConfig } from "./config";
+import { newIdempotencyKey } from "./idempotency";
 import type {
   ActivityItem,
   ConnectedAccount,
@@ -231,8 +232,11 @@ export async function rpcStartTask(taskId: string): Promise<StartTaskResult> {
   return postReward<StartTaskResult>({ action: "start_task", taskId });
 }
 
-export async function rpcClaimTask(taskId: string): Promise<ClaimResult> {
-  return postReward<ClaimResult>({ action: "claim_task", taskId });
+export async function rpcClaimTask(
+  taskId: string,
+  idempotencyKey: string = newIdempotencyKey(),
+): Promise<ClaimResult> {
+  return postReward<ClaimResult>({ action: "claim_task", taskId, idempotencyKey });
 }
 
 export async function rpcClaimCheckin(): Promise<ClaimResult> {
@@ -243,8 +247,9 @@ export async function rpcWithdraw(
   amount: number,
   network: Withdrawal["network"],
   address: string,
+  idempotencyKey: string = newIdempotencyKey(),
 ): Promise<Withdrawal> {
-  return postReward<Withdrawal>({ action: "withdraw", amount, network, address });
+  return postReward<Withdrawal>({ action: "withdraw", amount, network, address, idempotencyKey });
 }
 
 export async function saveWallet(patch: Partial<Wallet>): Promise<boolean> {

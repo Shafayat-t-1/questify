@@ -5,12 +5,16 @@ import { motion } from "framer-motion";
 import { CalendarCheck, Check, Flame, Loader2, Sparkles } from "lucide-react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { useQuestify } from "@/providers/QuestifyProvider";
-import { CHECKIN_SCHEDULE } from "@/lib/checkin";
+import { buildCheckinSchedule } from "@/lib/checkin";
 import { cn, formatCoins } from "@/lib/utils";
 
 export function DailyCheckinCard() {
-  const { checkin, actions } = useQuestify();
+  const { checkin, actions, config } = useQuestify();
   const [claiming, setClaiming] = useState(false);
+  const schedule = buildCheckinSchedule(
+    config.checkinRewardSchedule,
+    config.checkinMultiplierSchedule,
+  );
 
   const handleClaim = async () => {
     if (checkin.hasToday || claiming) return;
@@ -58,7 +62,7 @@ export function DailyCheckinCard() {
       </div>
 
       <div className="mt-4 grid grid-cols-7 gap-1.5">
-        {CHECKIN_SCHEDULE.map((day) => {
+        {schedule.map((day) => {
           const done = day.day <= checkin.completedDays;
           const isNext = day.day === checkin.nextDay && !checkin.hasToday;
           return (

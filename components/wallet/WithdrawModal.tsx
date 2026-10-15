@@ -13,9 +13,9 @@ interface WithdrawModalProps {
   onClose: () => void;
 }
 
-const NETWORKS: { key: Withdrawal["network"]; label: string; hint: string; fee: number }[] = [
-  { key: "BEP20", label: "USDT BEP-20", hint: "BSC network · 0x…", fee: 1 },
-  { key: "TON", label: "USDT TON", hint: "TON network · UQ…", fee: 0.5 },
+const NETWORKS: { key: Withdrawal["network"]; label: string; hint: string }[] = [
+  { key: "BEP20", label: "USDT BEP-20", hint: "BSC network · 0x…" },
+  { key: "TON", label: "USDT TON", hint: "TON network · UQ…" },
 ];
 
 export function WithdrawModal({ open, onClose }: WithdrawModalProps) {
@@ -41,6 +41,7 @@ function WithdrawForm({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   const net = NETWORKS.find((n) => n.key === network)!;
+  const fee = config.withdrawalFees[network];
 
   const selectNetwork = (next: Withdrawal["network"]) => {
     setNetwork(next);
@@ -147,7 +148,9 @@ function WithdrawForm({ onClose }: { onClose: () => void }) {
                     <WalletIcon className="h-3.5 w-3.5" />
                     {n.label}
                   </p>
-                  <p className="mt-0.5 text-[10px] text-white/40">Fee {n.fee} USDT</p>
+                  <p className="mt-0.5 text-[10px] text-white/40">
+                    Fee {config.withdrawalFees[n.key]} USDT
+                  </p>
                 </button>
               ))}
             </div>
@@ -170,7 +173,7 @@ function WithdrawForm({ onClose }: { onClose: () => void }) {
               <span className="text-xs font-semibold text-white/40">USDT</span>
             </div>
             <p className="mt-1 text-[10px] text-white/35">
-              You receive {formatUsdt(Math.max(0, numericAmount - net.fee))} USDT after fee
+              You receive {formatUsdt(Math.max(0, numericAmount - fee))} USDT after fee
             </p>
           </div>
 

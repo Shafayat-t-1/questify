@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api-auth";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { checkRateLimit, rateLimitedResponse } from "@/lib/rate-limit";
 
 const VALID_PROVIDERS = ["telegram", "google", "x", "github", "reddit", "discord", "youtube", "tiktok"] as const;
 
@@ -60,6 +61,9 @@ export async function POST(request: Request) {
 
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ ok: false, error: "not_configured" }, { status: 503 });
+
+  const outcome = await checkRateLimit(admin, "accounts", auth.context.userId);
+  if (!outcome.allowed) return rateLimitedResponse(outcome);
 
   try {
     await admin

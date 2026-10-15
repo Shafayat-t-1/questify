@@ -94,7 +94,7 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
   const username = profile?.username ?? profile?.first_name ?? "Questify User";
   const referralCode = profile?.referral_code ?? "";
   const refLink = referralLink(config, referralCode);
-  const estCoinValue = (profile?.coins ?? 0) * 0.0002;
+  const estCoinValue = (profile?.coins ?? 0) * config.coinToUsdtRate;
   const linkedProviders = new Set(connectedAccounts.map((a) => a.provider));
 
   const copyReferral = () => {

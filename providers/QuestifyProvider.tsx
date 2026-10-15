@@ -24,7 +24,7 @@ import {
   saveWallet,
   type ClaimResult,
 } from "@/lib/data";
-import { CHECKIN_SCHEDULE } from "@/lib/checkin";
+import { buildCheckinSchedule, type CheckinDay } from "@/lib/checkin";
 import { envConfig, type PublicConfig } from "@/lib/config";
 import { authHeaders, setInitData, setSessionToken } from "@/lib/session-client";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -136,7 +136,7 @@ function dateKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-function deriveCheckin(checkins: DailyCheckin[]) {
+function deriveCheckin(checkins: DailyCheckin[], schedule: CheckinDay[]) {
   const today = dateKey(new Date());
   const yesterday = dateKey(new Date(Date.now() - 86_400_000));
   const sorted = [...checkins].sort(
@@ -159,13 +159,13 @@ function deriveCheckin(checkins: DailyCheckin[]) {
     }
   }
 
-  const schedule = CHECKIN_SCHEDULE[nextDay - 1] ?? CHECKIN_SCHEDULE[0];
+  const day = schedule[nextDay - 1] ?? schedule[0];
   return {
     hasToday,
     completedDays,
     nextDay,
-    reward: schedule.coins,
-    multiplier: schedule.multiplier,
+    reward: day.coins,
+    multiplier: day.multiplier,
   };
 }
 
@@ -322,7 +322,14 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
     void run();
   }, [isReady, initData, referralCode, pushToast]);
 
-  const checkin = useMemo(() => deriveCheckin(checkins), [checkins]);
+  const checkinSchedule = useMemo(
+    () => buildCheckinSchedule(config.checkinRewardSchedule, config.checkinMultiplierSchedule),
+    [config.checkinRewardSchedule, config.checkinMultiplierSchedule],
+  );
+  const checkin = useMemo(
+    () => deriveCheckin(checkins, checkinSchedule),
+    [checkins, checkinSchedule],
+  );
   const completedCount = useMemo(
     () => Object.values(userTasks).filter((t) => t.status === "completed").length,
     [userTasks],
@@ -357,7 +364,8 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
     setProfile((prev) => {
       if (!prev) return prev;
       const nextCoins = prev.coins + coins;
-      const nextLevel = Math.max(1, Math.floor(nextCoins / 1000) + 1);
+      const perLevel = config.levelCoinsPerLevel || 1000;
+      const nextLevel = Math.max(1, Math.floor(nextCoins / perLevel) + 1);
       if (nextLevel > prev.level) {
         celebrate();
         window.setTimeout(
@@ -373,7 +381,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         level: nextLevel,
       };
     });
-  }, [celebrate, pushToast]);
+  }, [celebrate, pushToast, config.levelCoinsPerLevel]);
 
   // --- Actions -------------------------------------------------------------
   // Records the server-side "started" marker so the duration gate in
@@ -499,7 +507,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         id: nextId(),
         type: "checkin",
         title: `Daily check-in · Day ${day}`,
-        subtitle: `Streak bonus x${(CHECKIN_SCHEDULE[day - 1]?.multiplier ?? 1).toFixed(1)}`,
+        subtitle: `Streak bonus x${(checkinSchedule[day - 1]?.multiplier ?? 1).toFixed(1)}`,
         amount_coins: rewardCoins,
         amount_usdt: 0,
         status: "completed",
@@ -509,7 +517,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
     ]);
 
     return { ok: true, coins: rewardCoins, message: `+${rewardCoins} coins` };
-  }, [profile, checkin, applyProfileDelta, spawnReward, haptic]);
+  }, [profile, checkin, checkinSchedule, applyProfileDelta, spawnReward, haptic]);
 
   const requestWithdrawal = useCallback<
     QuestifyContextValue["actions"]["requestWithdrawal"]
@@ -520,7 +528,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, message: `Minimum withdrawal is ${config.minWithdrawalUsdt} USDT` };
       if (amount > profile.usdt_balance)
         return { ok: false, message: "Insufficient balance" };
-      if (profile.trust_score < 30)
+      if (profile.trust_score < config.trustThresholdForWithdrawal)
         return { ok: false, message: "Trust score too low" };
       if (!address || address.trim().length < 10)
         return { ok: false, message: `Enter a valid ${network} address` };
@@ -574,7 +582,7 @@ export function QuestifyProvider({ children }: { children: React.ReactNode }) {
 
       return { ok: true, usdt: amount, message: "Withdrawal submitted" };
     },
-    [profile, config.minWithdrawalUsdt, haptic, pushToast],
+    [profile, config.minWithdrawalUsdt, config.trustThresholdForWithdrawal, haptic, pushToast],
   );
 
   const updateWallet = useCallback(

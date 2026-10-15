@@ -8,6 +8,8 @@ import {
   isValidAddress,
   isValidAmount,
 } from "@/lib/validation";
+import { checkRateLimit, rateLimitedResponse } from "@/lib/rate-limit";
+import { isValidIdempotencyKey } from "@/lib/idempotency";
 
 interface RewardsBody {
   action?:
@@ -21,6 +23,7 @@ interface RewardsBody {
   network?: string;
   address?: string;
   wallet?: { usdt_bep20?: string | null; ton_address?: string | null };
+  idempotencyKey?: string;
 }
 
 function fail(error: string, status: number) {
@@ -51,6 +54,20 @@ export async function POST(request: Request) {
 
   const userId = auth.context.userId;
   const telegramId = auth.context.telegramId;
+
+  // Per-action rate limiting (rules from platform_settings, counted in Postgres).
+  const limitAction =
+    body.action === "claim_task"
+      ? "claim_task"
+      : body.action === "claim_checkin"
+        ? "checkin"
+        : body.action === "withdraw"
+          ? "withdraw"
+          : null;
+  if (limitAction) {
+    const outcome = await checkRateLimit(admin, limitAction, userId);
+    if (!outcome.allowed) return rateLimitedResponse(outcome);
+  }
 
   try {
     switch (body.action) {
@@ -88,9 +105,13 @@ export async function POST(request: Request) {
         });
         if (!verdict.ok) return fail(verdict.reason ?? "verification_failed", 403);
 
+        const idempotencyKey = isValidIdempotencyKey(body.idempotencyKey)
+          ? body.idempotencyKey
+          : null;
         const { data, error } = await admin.rpc("claim_task", {
           p_task_id: body.taskId,
           p_user: userId,
+          p_idempotency_key: idempotencyKey,
         });
         if (error) throw error;
         return NextResponse.json({ ok: true, data });
@@ -108,11 +129,15 @@ export async function POST(request: Request) {
         if (!isValidAmount(body.amount)) return fail("invalid_amount", 400);
         if (!isNetwork(body.network)) return fail("invalid_network", 400);
         if (!isValidAddress(body.network, body.address)) return fail("invalid_address", 400);
+        const idempotencyKey = isValidIdempotencyKey(body.idempotencyKey)
+          ? body.idempotencyKey
+          : null;
         const { data, error } = await admin.rpc("request_withdrawal", {
           p_amount: body.amount,
           p_network: body.network,
           p_address: body.address.trim(),
           p_user: userId,
+          p_idempotency_key: idempotencyKey,
         });
         if (error) throw error;
         return NextResponse.json({ ok: true, data });

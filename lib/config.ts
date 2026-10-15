@@ -8,6 +8,11 @@
  * is keyed on `profiles.id` / `profiles.referral_code`, never on the bot handle.
  */
 
+export interface WithdrawalFees {
+  BEP20: number;
+  TON: number;
+}
+
 export interface PublicConfig {
   brandName: string;
   botUsername: string;
@@ -15,6 +20,18 @@ export interface PublicConfig {
   miniappShortname: string | null;
   minWithdrawalUsdt: number;
   supportUsername: string | null;
+  /** Economics surfaced to the client for display (server still authoritative). */
+  coinToUsdtRate: number;
+  withdrawalFees: WithdrawalFees;
+  checkinRewardSchedule: number[];
+  checkinMultiplierSchedule: number[];
+  levelCoinsPerLevel: number;
+  trustThresholdForWithdrawal: number;
+  leaderboard: {
+    seasonLabel: string;
+    resetLabel: string;
+    rewardNote: string;
+  };
 }
 
 const DEFAULTS: PublicConfig = {
@@ -24,6 +41,17 @@ const DEFAULTS: PublicConfig = {
   miniappShortname: null,
   minWithdrawalUsdt: 1,
   supportUsername: null,
+  coinToUsdtRate: 0.0002,
+  withdrawalFees: { BEP20: 1, TON: 0.5 },
+  checkinRewardSchedule: [100, 150, 220, 320, 450, 600, 1000],
+  checkinMultiplierSchedule: [1.0, 1.1, 1.2, 1.4, 1.6, 1.8, 2.5],
+  levelCoinsPerLevel: 1000,
+  trustThresholdForWithdrawal: 30,
+  leaderboard: {
+    seasonLabel: "Season 1",
+    resetLabel: "resets in 6 days",
+    rewardNote: "Top 100 rewarded",
+  },
 };
 
 /** Config available at build time from public env vars (client + server). */
@@ -35,6 +63,13 @@ export function envConfig(): PublicConfig {
     miniappShortname: process.env.NEXT_PUBLIC_MINIAPP_SHORTNAME || DEFAULTS.miniappShortname,
     minWithdrawalUsdt: Number(process.env.NEXT_PUBLIC_MIN_WITHDRAWAL_USDT) || DEFAULTS.minWithdrawalUsdt,
     supportUsername: process.env.NEXT_PUBLIC_SUPPORT_USERNAME || DEFAULTS.supportUsername,
+    coinToUsdtRate: DEFAULTS.coinToUsdtRate,
+    withdrawalFees: { ...DEFAULTS.withdrawalFees },
+    checkinRewardSchedule: [...DEFAULTS.checkinRewardSchedule],
+    checkinMultiplierSchedule: [...DEFAULTS.checkinMultiplierSchedule],
+    levelCoinsPerLevel: DEFAULTS.levelCoinsPerLevel,
+    trustThresholdForWithdrawal: DEFAULTS.trustThresholdForWithdrawal,
+    leaderboard: { ...DEFAULTS.leaderboard },
   };
 }
 
