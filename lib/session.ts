@@ -27,9 +27,22 @@ export interface SessionPayload {
   sub: string;
   tg?: number;
   demo?: boolean;
+  /** Set on browser-cookie sessions minted for the /mcc control center. */
+  purpose?: string;
   iat?: number;
   exp?: number;
 }
+
+/**
+ * Cookie name for the standalone /mcc browser session. Same JWT secret and
+ * same `verifySessionToken` as the Mini App bearer token — only the delivery
+ * mechanism differs (httpOnly cookie for the browser, Authorization header for
+ * the Mini App).
+ */
+export const MCC_SESSION_COOKIE = "questify_mcc";
+
+/** Default lifetime of an /mcc browser session (7 days). */
+export const MCC_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 function base64url(input: string | Buffer): string {
   return Buffer.from(input).toString("base64url");
@@ -118,4 +131,51 @@ export function bearerToken(request: Request): string | null {
   if (!header) return null;
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
   return match ? match[1] : null;
+}
+
+/** Extract a named cookie from an incoming request's Cookie header. */
+export function readCookieToken(request: Request, name: string): string | null {
+  const header = request.headers.get("cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    if (key === name) {
+      const value = part.slice(eq + 1).trim();
+      if (!value) return null;
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+/** Set-Cookie header value that stores the MCC browser session (httpOnly). */
+export function mccCookieHeader(token: string, maxAgeSeconds: number): string {
+  const parts = [
+    `${MCC_SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.max(0, Math.trunc(maxAgeSeconds))}`,
+  ];
+  if (process.env.NODE_ENV === "production") parts.push("Secure");
+  return parts.join("; ");
+}
+
+/** Set-Cookie header value that clears the MCC browser session (logout). */
+export function mccClearCookieHeader(): string {
+  const parts = [
+    `${MCC_SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ];
+  if (process.env.NODE_ENV === "production") parts.push("Secure");
+  return parts.join("; ");
 }

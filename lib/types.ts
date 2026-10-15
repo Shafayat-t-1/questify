@@ -29,6 +29,7 @@ export interface Profile {
   is_premium: boolean;
   is_banned: boolean;
   is_admin?: boolean;
+  is_founder?: boolean;
   created_at: string;
   updated_at: string;
 }

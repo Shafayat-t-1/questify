@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { authenticateRequest } from "@/lib/api-auth";
+import { loadMccAdminProfile, mccTokenFromRequest } from "@/lib/mcc-auth";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import {
   boundedInt,
@@ -112,13 +113,31 @@ type AdminGate =
   | { error: NextResponse }
   | { admin: SupabaseClient; adminId: string };
 
-/** Authenticate the session (HMAC-verified) and confirm the caller is admin. */
+/**
+ * Authenticate the caller for the admin API. Two delivery mechanisms of the
+ * same signed session token are accepted:
+ *
+ *   1. the standalone /mcc browser — httpOnly `questify_mcc` cookie;
+ *   2. the in-app Quick Panel — Authorization bearer + fresh Mini App initData.
+ *
+ * Either way the resolved profile must have `is_admin = true`; `is_founder` is
+ * cosmetic and never consulted for authorization.
+ */
 async function requireAdmin(request: Request): Promise<AdminGate> {
-  const auth = authenticateRequest(request);
-  if (!auth.ok) return { error: auth.response };
-
   const admin = getSupabaseAdmin();
   if (!admin) return { error: fail("not_configured", 503) };
+
+  // Surface 1: /mcc cookie session.
+  const mccPayload = mccTokenFromRequest(request);
+  if (mccPayload) {
+    const context = await loadMccAdminProfile(mccPayload.sub);
+    if (!context) return { error: fail("forbidden", 403) };
+    return { admin, adminId: context.adminId };
+  }
+
+  // Surface 2: Mini App bearer + initData.
+  const auth = authenticateRequest(request);
+  if (!auth.ok) return { error: auth.response };
 
   const { data: me } = await admin
     .from("profiles")
@@ -345,7 +364,10 @@ export async function POST(request: Request) {
         const deltaCoins = boundedInt(params.delta_coins, -1_000_000_000, 1_000_000_000) ?? 0;
         const deltaUsdt = boundedNumber(params.delta_usdt, -1_000_000, 1_000_000) ?? 0;
         if (deltaCoins === 0 && deltaUsdt === 0) return fail("empty_adjustment", 400);
-        const reason = boundedString(params.reason, 200) ?? "manual adjustment";
+        // Phase 3A: every balance change must carry an audit reason. The RPC
+        // rejects a blank reason too, but we fail fast (and with a clear code).
+        const reason = boundedString(params.reason, 200);
+        if (!reason) return fail("reason_required", 400);
         const { data, error } = await admin.rpc("admin_adjust_balance", {
           p_admin: adminId,
           p_user_id: params.userId,
