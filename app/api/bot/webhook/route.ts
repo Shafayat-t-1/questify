@@ -1,4 +1,9 @@
 import { NextResponse } from "next/server";
+import {
+  hashMccMagicToken,
+  signMccMagicToken,
+  MCC_MAGIC_TTL_SECONDS,
+} from "@/lib/mcc-magic";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -6,6 +11,10 @@ const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://questify-nine-tau.vercel.app";
 const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME || "questify_app_bot";
 const MINIAPP_SHORTNAME = process.env.NEXT_PUBLIC_MINIAPP_SHORTNAME || "";
+
+/** Magic-link requests allowed per telegram id per hour (`/login` command). */
+const LOGIN_RATE_MAX = 5;
+const LOGIN_RATE_WINDOW_SECONDS = 60 * 60;
 
 /**
  * Public referral link shared by users. Prefers the Direct-Link form
@@ -69,6 +78,89 @@ async function sendMessage(chatId: number | string, text: string, button: Inline
   });
 }
 
+/** `/login` spam guard: 5 magic-link requests per telegram id per hour. */
+async function loginRateLimited(telegramId: number): Promise<boolean> {
+  const admin = getSupabaseAdmin();
+  if (!admin) return false;
+  try {
+    const { data, error } = await admin.rpc("check_rate_limit", {
+      p_key: `rl:mcc_login_cmd:${telegramId}`,
+      p_max: LOGIN_RATE_MAX,
+      p_window_seconds: LOGIN_RATE_WINDOW_SECONDS,
+    });
+    if (error) {
+      // Same fail-open posture as /api/mcc-auth: the limiter must never lock
+      // the operator out on a storage blip. Admin gating still applies below.
+      console.error("[questify] login rate limit check failed", error);
+      return false;
+    }
+    return data === false;
+  } catch (err) {
+    console.error("[questify] login rate limit check failed", err);
+    return false;
+  }
+}
+
+/**
+ * `/login` — primary MCC auth path (Phase 3A-FIX). Replies with a single-use,
+ * 5-minute magic link, but ONLY to a telegram id whose profile has
+ * is_admin = true. Everyone else is ignored silently: the bot must never
+ * reveal whether an account has admin rights. The raw token exists only in
+ * the link; the DB row stores its SHA-256 hash.
+ */
+async function handleLoginCommand(chatId: number | string, fromId: number): Promise<NextResponse> {
+  if (await loginRateLimited(fromId)) {
+    await sendMessage(
+      chatId,
+      "Too many login-link requests. Wait a while and send /login again.",
+      { text: "Questify", url: `https://t.me/${BOT_USERNAME}` },
+    );
+    return NextResponse.json({ ok: true });
+  }
+
+  const admin = getSupabaseAdmin();
+  if (!admin) return NextResponse.json({ ok: true });
+
+  const { data: profile, error } = await admin
+    .from("profiles")
+    .select("id, is_admin")
+    .eq("telegram_id", fromId)
+    .maybeSingle();
+  if (error) {
+    console.error("[questify] login admin lookup failed", error);
+    return NextResponse.json({ ok: true });
+  }
+  // Unknown or non-admin: answer with an empty 200 and no message.
+  if (!profile || !profile.is_admin) return NextResponse.json({ ok: true });
+
+  const raw = signMccMagicToken(profile.id as string);
+  const { error: insertError } = await admin.from("mcc_magic_tokens").insert({
+    token_hash: hashMccMagicToken(raw),
+    user_id: profile.id,
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + MCC_MAGIC_TTL_SECONDS * 1000).toISOString(),
+    used_at: null,
+  });
+  if (insertError) {
+    console.error("[questify] magic token save failed", insertError);
+    await sendMessage(chatId, "Could not create a login link right now. Try again in a minute.", {
+      text: "Questify",
+      url: `https://t.me/${BOT_USERNAME}`,
+    });
+    return NextResponse.json({ ok: true });
+  }
+
+  const link = `${APP_URL}/mcc/magic?token=${encodeURIComponent(raw)}`;
+  await sendMessage(
+    chatId,
+    `🔐 <b>MCC login link</b>\n\n` +
+      `Single use · valid for 5 minutes · bound to your admin account.\n\n` +
+      `${link}`,
+    { text: "🔓 Open control center", url: link },
+  );
+  return NextResponse.json({ ok: true });
+}
+
 export async function POST(request: Request) {
   if (!BOT_TOKEN) {
     return NextResponse.json({ ok: false, error: "bot_not_configured" }, { status: 503 });
@@ -111,6 +203,16 @@ export async function POST(request: Request) {
         web_app: { url: launchUrl },
       });
       return NextResponse.json({ ok: true });
+    }
+
+    // `/login` (and the `/login@botname` group form) — MCC magic link.
+    const command = (text.split(/\s+/)[0] ?? "").split("@")[0].toLowerCase();
+    if (command === "/login") {
+      const fromId = update.message?.from?.id;
+      if (fromId === undefined || chatId === undefined) {
+        return NextResponse.json({ ok: true });
+      }
+      return handleLoginCommand(chatId, Number(fromId));
     }
 
     return NextResponse.json({ ok: true });

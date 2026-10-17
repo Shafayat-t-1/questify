@@ -2,7 +2,9 @@
  * Minimal in-memory stand-in for the Supabase service-role client used by tests.
  *
  * It deliberately implements ONLY the query shapes the routes under test use
- * (`select(...).eq(...).maybeSingle()`, simple `order/limit/range`, `upsert`),
+ * (`select(...).eq(...).maybeSingle()`, conditional
+ * `update(...).eq(...).is(...).gte(...).select()` one-time claims, simple
+ * `order/limit/range`, `upsert`),
  * so route wiring can be exercised without a database. The money RPCs are
  * provided per-test via `rpcHandler`, which mirrors the SQL semantics so the
  * route contract can be asserted. This does NOT execute the real migrations —
@@ -32,10 +34,16 @@ export class FakeAdmin {
   }
 }
 
-type Mode = "select" | "upsert";
+type Mode = "select" | "upsert" | "update";
+type FilterOp = "eq" | "is" | "gte";
+interface Filter {
+  op: FilterOp;
+  col: string;
+  value: unknown;
+}
 
 export class QueryBuilder implements PromiseLike<RpcResult> {
-  private filters: Array<[string, unknown]> = [];
+  private filters: Filter[] = [];
   private mode: Mode = "select";
   private payload: Row[] = [];
   private singleRow = false;
@@ -46,12 +54,25 @@ export class QueryBuilder implements PromiseLike<RpcResult> {
     private table: string,
   ) {}
 
-  select(): this {
+  select(_cols?: string | string[]): this {
+    void _cols;
     return this;
   }
 
   eq(col: string, value: unknown): this {
-    this.filters.push([col, value]);
+    this.filters.push({ op: "eq", col, value });
+    return this;
+  }
+
+  /** PostgREST `.is(col, null)` — used by one-time-claim guards. */
+  is(col: string, value: unknown): this {
+    this.filters.push({ op: "is", col, value });
+    return this;
+  }
+
+  /** PostgREST `.gte(col, value)` — ISO timestamp strings compare correctly. */
+  gte(col: string, value: unknown): this {
+    this.filters.push({ op: "gte", col, value });
     return this;
   }
 
@@ -70,6 +91,12 @@ export class QueryBuilder implements PromiseLike<RpcResult> {
   insert(rows: Row | Row[]): this {
     this.mode = "upsert";
     this.payload = Array.isArray(rows) ? rows : [rows];
+    return this;
+  }
+
+  update(rows: Row): this {
+    this.mode = "update";
+    this.payload = [rows];
     return this;
   }
 
@@ -97,6 +124,19 @@ export class QueryBuilder implements PromiseLike<RpcResult> {
     return Promise.resolve(this.resolve()).then(onfulfilled, onrejected);
   }
 
+  private matches(row: Row): boolean {
+    return this.filters.every(({ op, col, value }) => {
+      const current = row[col];
+      if (op === "eq") return current === value;
+      if (op === "is") return value === null ? current === null || current === undefined : current === value;
+      return (
+        (typeof current === "string" || typeof current === "number") &&
+        (typeof value === "string" || typeof value === "number") &&
+        current >= value
+      );
+    });
+  }
+
   private resolve(): RpcResult {
     if (this.mode === "upsert") {
       this.db.tables[this.table] = this.db.tables[this.table] ?? [];
@@ -109,9 +149,21 @@ export class QueryBuilder implements PromiseLike<RpcResult> {
       return { data: this.payload, error: null };
     }
 
-    const rows = (this.db.tables[this.table] ?? []).filter((row) =>
-      this.filters.every(([col, value]) => row[col] === value),
-    );
+    if (this.mode === "update") {
+      // Conditional UPDATE: filters are the SQL WHERE, mutation is in-place,
+      // and `data` is the RETURNING set (row-count source of truth).
+      const rows = this.db.tables[this.table] ?? [];
+      const updated: Row[] = [];
+      for (const row of rows) {
+        if (this.matches(row)) {
+          for (const patch of this.payload) Object.assign(row, patch);
+          updated.push({ ...row });
+        }
+      }
+      return { data: updated, error: null };
+    }
+
+    const rows = (this.db.tables[this.table] ?? []).filter((row) => this.matches(row));
     if (this.maybe) return { data: rows[0] ?? null, error: null };
     if (this.singleRow) {
       return rows.length === 1

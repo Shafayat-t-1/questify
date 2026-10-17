@@ -29,6 +29,8 @@ export interface SessionPayload {
   demo?: boolean;
   /** Set on browser-cookie sessions minted for the /mcc control center. */
   purpose?: string;
+  /** Random single-use id — magic-link tokens only, never cookie sessions. */
+  jti?: string;
   iat?: number;
   exp?: number;
 }
