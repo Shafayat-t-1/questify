@@ -107,13 +107,16 @@ async function sendMessage(
     chat_id: number | string;
     text: string;
     disable_web_page_preview: boolean;
-    reply_markup: { inline_keyboard: InlineKeyboardButton[] };
+    reply_markup: { inline_keyboard: InlineKeyboardButton[][] };
     parse_mode?: "HTML";
   } = {
     chat_id: chatId,
     text,
     disable_web_page_preview: true,
-    reply_markup: { inline_keyboard: [button] },
+    // Telegram requires `inline_keyboard` to be an Array of Arrays — one inner
+    // array per button row ("Bad Request: expected an Array of InlineKeyboardButton"
+    // otherwise). See https://core.telegram.org/bots/api#inlinekeyboardmarkup
+    reply_markup: { inline_keyboard: [[button]] },
   };
   if (parseMode) payload.parse_mode = parseMode;
 

@@ -99,12 +99,13 @@ function sentMessages(): SentMessage[] {
     .map(([, init]) => {
       const body = JSON.parse(init.body) as {
         text: string;
-        // sendMessage builds `inline_keyboard: [button]` (one flat button).
-        reply_markup?: { inline_keyboard?: Array<{ url?: string }> };
+        // sendMessage builds `inline_keyboard: [[button]]` — an array of rows,
+        // each row an array of buttons (Telegram InlineKeyboardMarkup spec).
+        reply_markup?: { inline_keyboard?: Array<Array<{ url?: string }>> };
       };
       return {
         text: body.text,
-        url: body.reply_markup?.inline_keyboard?.[0]?.url ?? null,
+        url: body.reply_markup?.inline_keyboard?.[0]?.[0]?.url ?? null,
       };
     });
 }
