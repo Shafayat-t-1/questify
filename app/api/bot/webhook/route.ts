@@ -38,7 +38,7 @@ interface InlineKeyboardButton {
 
 interface TelegramUpdate {
   message?: {
-    chat?: { id?: number | string };
+    chat?: { id?: number | string; type?: string };
     from?: { id?: number | string };
     text?: string;
   };
@@ -64,18 +64,98 @@ async function storePendingReferral(telegramId: number | string, code: string): 
   }
 }
 
-async function sendMessage(chatId: number | string, text: string, button: InlineKeyboardButton) {
-  return fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      reply_markup: { inline_keyboard: [button] },
-    }),
+/**
+ * Strip credential-bearing query values (e.g. the single-use magic-link
+ * `token=...`) from anything we are about to log. Response bodies echo the sent
+ * text, which for `/login` contains the raw magic token — that must never reach
+ * the logs.
+ */
+function redactSecrets(value: string): string {
+  return value.replace(/([?&]token=)[^&\s"\\]+/gi, "$1<redacted>");
+}
+
+function urlOrigin(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
+/**
+ * Send one message via the Telegram Bot API.
+ *
+ * Diagnostic rules (Phase DEBUG): every request and every Telegram response is
+ * logged with console.log/console.error so a silent sendMessage rejection is
+ * impossible to miss in plain Vercel function logs — no paid Observability
+ * needed. The bot token is NEVER logged, only its presence/length/format. The
+ * signed magic-link URL is never logged either (redacted).
+ *
+ * parse_mode is OFF by default: plain text needs no escaping and Telegram
+ * auto-links a bare URL on its own line. Callers that genuinely use markup must
+ * opt in via `options.parseMode` and escape dynamic content.
+ */
+async function sendMessage(
+  chatId: number | string,
+  text: string,
+  button: InlineKeyboardButton,
+  options?: { parseMode?: "HTML" },
+): Promise<Response | null> {
+  const parseMode = options?.parseMode;
+  const payload: {
+    chat_id: number | string;
+    text: string;
+    disable_web_page_preview: boolean;
+    reply_markup: { inline_keyboard: InlineKeyboardButton[] };
+    parse_mode?: "HTML";
+  } = {
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [button] },
+  };
+  if (parseMode) payload.parse_mode = parseMode;
+
+  console.log("[questify] sendMessage request", {
+    chat_id: chatId,
+    chat_id_type: typeof chatId,
+    text_length: text.length,
+    parse_mode: parseMode ?? null,
+    button_kind: button.web_app ? "web_app" : "url",
+    button_url_origin: urlOrigin(button.url),
+    button_web_app_origin: urlOrigin(button.web_app?.url),
+    bot_token_present: Boolean(BOT_TOKEN),
+    bot_token_length: BOT_TOKEN?.length ?? 0,
+    bot_token_has_surrounding_whitespace: BOT_TOKEN !== BOT_TOKEN?.trim(),
+    bot_token_format_ok: /^\d+:[A-Za-z0-9_-]+$/.test(BOT_TOKEN ?? ""),
   });
+
+  let res: Response;
+  try {
+    res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("[questify] sendMessage network error", err);
+    return null;
+  }
+
+  let body = "";
+  try {
+    body = await res.text();
+  } catch (err) {
+    body = `<response body unreadable: ${String(err)}>`;
+  }
+
+  const redacted = redactSecrets(body);
+  console.log("[questify] sendMessage response", { status: res.status, ok: res.ok, body: redacted });
+  if (!res.ok) {
+    console.error("[questify] sendMessage FAILED", { status: res.status, body: redacted });
+  }
+  return res;
 }
 
 /** `/login` spam guard: 5 magic-link requests per telegram id per hour. */
@@ -151,9 +231,12 @@ async function handleLoginCommand(chatId: number | string, fromId: number): Prom
   }
 
   const link = `${APP_URL}/mcc/magic?token=${encodeURIComponent(raw)}`;
+  // Plain text (no parse_mode): the signed URL is a JWT with `.`, `-`, `_` and
+  // `%` escapes that are hazardous under MarkdownV2 and unnecessary under HTML.
+  // Without parse_mode Telegram auto-links the bare URL on its own line.
   await sendMessage(
     chatId,
-    `🔐 <b>MCC login link</b>\n\n` +
+    `🔐 MCC login link\n\n` +
       `Single use · valid for 5 minutes · bound to your admin account.\n\n` +
       `${link}`,
     { text: "🔓 Open control center", url: link },
@@ -180,6 +263,14 @@ export async function POST(request: Request) {
     const chatId = update.message?.chat?.id;
     const text = update.message?.text ?? "";
 
+    console.log("[questify] webhook update", {
+      chat_id: chatId,
+      chat_id_type: typeof chatId,
+      chat_type: update.message?.chat?.type ?? null,
+      from_id: update.message?.from?.id ?? null,
+      text: text.slice(0, 64),
+    });
+
     if (chatId !== undefined && text.startsWith("/start")) {
       const ref = text.split(/\s+/)[1];
       const fromId = update.message?.from?.id ?? chatId;
@@ -189,7 +280,7 @@ export async function POST(request: Request) {
       const referralLink = ref ? referralDeepLink(ref) : `https://t.me/${BOT_USERNAME}`;
       const welcome =
         `🎮 <b>Welcome to Questify!</b>\n\n` +
-        `Complete tasks, earn coins & USDT, and withdraw real rewards.\n\n` +
+        `Complete tasks, earn coins &amp; USDT, and withdraw real rewards.\n\n` +
         `Your referral link:\n${referralLink}\n\n` +
         `Tap the button below to launch the Mini App.`;
 
@@ -198,10 +289,15 @@ export async function POST(request: Request) {
       // When the share payload carries a referral code we forward it as `?ref=`
       // so both old (`?start=`) and new (`?startapp=`) links work.
       const launchUrl = ref ? `${APP_URL}?ref=${encodeURIComponent(ref)}` : APP_URL;
-      await sendMessage(chatId, welcome, {
-        text: "🚀 Open Questify",
-        web_app: { url: launchUrl },
-      });
+      await sendMessage(
+        chatId,
+        welcome,
+        {
+          text: "🚀 Open Questify",
+          web_app: { url: launchUrl },
+        },
+        { parseMode: "HTML" },
+      );
       return NextResponse.json({ ok: true });
     }
 
