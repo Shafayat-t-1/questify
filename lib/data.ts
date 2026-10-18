@@ -183,6 +183,20 @@ function rewardErrorMessage(code?: string): string {
       return "Verification still in progress — please wait for the timer";
     case "not_member":
       return "You haven't joined yet — complete the action, then try again";
+    case "not_boosted":
+      return "No active boost found — boost the channel, then try again";
+    case "github_not_linked":
+      return "Link your GitHub account first (Profile → GitHub), then try again";
+    case "not_starred":
+      return "GitHub shows no star on this repo for your linked account — star it, then try again";
+    case "not_forked":
+      return "GitHub shows no fork of this repo for your linked account — fork it, then try again";
+    case "verification_inconclusive":
+      return "Couldn't confirm through GitHub just now — wait a minute and try again";
+    case "verification_unavailable":
+      return "This task can't be verified right now — please try again later";
+    case "telegram_not_configured":
+      return "Reopen the app from Telegram to verify this task";
     case "account_not_linked":
       return "Link the required account first, then try again";
     case "unsupported_verification":

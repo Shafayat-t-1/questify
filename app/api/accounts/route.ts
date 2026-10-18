@@ -7,6 +7,14 @@ const VALID_PROVIDERS = ["telegram", "google", "x", "github", "reddit", "discord
 
 type Provider = (typeof VALID_PROVIDERS)[number];
 
+/**
+ * Phase 4A: real-verified providers can ONLY be linked through the OAuth
+ * flow (/api/oauth/[provider]/start). Self-asserted writes for them are
+ * rejected here so a crafted POST can never fake an account_link task.
+ * Remaining providers (telegram, x, youtube, tiktok, reddit) stay manual.
+ */
+const OAUTH_ONLY_PROVIDERS = ["google", "github", "discord"] as const;
+
 function isProvider(p: unknown): p is Provider {
   return typeof p === "string" && (VALID_PROVIDERS as readonly string[]).includes(p);
 }
@@ -57,6 +65,9 @@ export async function POST(request: Request) {
 
   if (!isProvider(provider)) {
     return NextResponse.json({ ok: false, error: "invalid_provider" }, { status: 400 });
+  }
+  if ((OAUTH_ONLY_PROVIDERS as readonly string[]).includes(provider)) {
+    return NextResponse.json({ ok: false, error: "provider_requires_oauth" }, { status: 403 });
   }
 
   const admin = getSupabaseAdmin();

@@ -29,6 +29,7 @@ import {
 } from "@/components/icons/brand";
 import { useQuestify } from "@/providers/QuestifyProvider";
 import { useTelegram } from "@/hooks/useTelegram";
+import { authHeaders } from "@/lib/session-client";
 import { referralLink, referralShareUrl } from "@/lib/config";
 import { cn, formatCoins, formatUsdt, levelTitle, timeAgo } from "@/lib/utils";
 import type { ActivityItem } from "@/lib/types";
@@ -86,11 +87,55 @@ const ACTIVITY_TINT: Record<ActivityItem["type"], string> = {
   checkin: "text-emerald-300",
 };
 
+/** Providers linked via the real OAuth flow (phase 4A) — no manual username form. */
+const OAUTH_PROVIDERS = new Set<string>(["google", "github", "discord"]);
+
 export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
   const { profile, wallet, activity, actions, config, connectedAccounts } = useQuestify();
   const { haptic, openLink } = useTelegram();
   const [linking, setLinking] = useState<string | null>(null);
   const [form, setForm] = useState<{ username?: string; profile_url?: string }>({});
+  const [oauthBusy, setOauthBusy] = useState<string | null>(null);
+
+  /**
+   * Phase 4A: google/github/discord link through the real OAuth flow. The
+   * server validates the session and rate-limits, returns the provider's
+   * consent URL; we then navigate the top-level window to it.
+   */
+  const startOAuth = async (provider: string) => {
+    if (oauthBusy) return;
+    setOauthBusy(provider);
+    haptic("light");
+    try {
+      const res = await fetch(`/api/oauth/${provider}/start`, {
+        method: "GET",
+        headers: { ...authHeaders() },
+        cache: "no-store",
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string; authorizeUrl?: string };
+      if (res.ok && json.ok && json.authorizeUrl) {
+        window.location.assign(json.authorizeUrl);
+        return;
+      }
+      const message =
+        json.error === "provider_not_configured"
+          ? `${provider} sign-in isn't configured yet.`
+          : res.status === 429
+            ? "Too many attempts — wait a minute and try again."
+            : json.error === "app_url_not_configured"
+              ? "App URL isn't configured."
+              : "Could not start sign-in. Please try again.";
+      actions.pushToast({ kind: "error", title: "Sign-in failed", message });
+    } catch {
+      actions.pushToast({
+        kind: "error",
+        title: "Sign-in failed",
+        message: "Network error — please try again.",
+      });
+    } finally {
+      setOauthBusy(null);
+    }
+  };
 
   const username = profile?.username ?? profile?.first_name ?? "Questify User";
   const referralCode = profile?.referral_code ?? "";
@@ -246,16 +291,23 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
                   type="button"
                   onClick={() => {
                     if (connected) return;
+                    if (OAUTH_PROVIDERS.has(acc.key)) {
+                      void startOAuth(acc.key);
+                      return;
+                    }
                     haptic("light");
                     setLinking(acc.key);
                     setForm({});
                   }}
                   className={cn(
                     "text-[9px] font-bold uppercase",
-                    connected ? "cursor-default text-emerald-300" : "text-white/60 hover:text-white",
+                    connected
+                      ? "cursor-default text-emerald-300"
+                      : "text-white/60 hover:text-white",
+                    oauthBusy === acc.key && "animate-pulse",
                   )}
                 >
-                  {connected ? "Linked" : "Connect"}
+                  {connected ? "Linked" : oauthBusy === acc.key ? "Opening…" : "Connect"}
                 </button>
               </div>
             );
@@ -272,7 +324,8 @@ export function ProfileView({ onOpenWithdraw }: ProfileViewProps) {
               </button>
             </div>
             <p className="text-[10px] text-white/40">
-              Enter your username or profile link for verification. This is a fallback when OAuth isn&apos;t configured.
+              Enter your username or profile link. Manual entries are self-reported; Google,
+              GitHub &amp; Discord use real OAuth sign-in instead.
             </p>
             <input
               className="w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-xs text-white placeholder:text-white/30"

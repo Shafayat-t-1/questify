@@ -17,6 +17,8 @@ interface TaskForm {
   margin_usdt: string;
   duration_seconds: string;
   max_completions: string;
+  verification_type: string;
+  verification_target: string;
   is_active: boolean;
 }
 
@@ -31,8 +33,27 @@ const EMPTY: TaskForm = {
   margin_usdt: "0",
   duration_seconds: "0",
   max_completions: "0",
+  verification_type: "none",
+  verification_target: "",
   is_active: true,
 };
+
+/** Phase 4A verification options (server rejects unknown types as misconfigured). */
+const VERIFICATION_OPTIONS = [
+  { value: "none", label: "None — time gate only" },
+  { value: "telegram_join", label: "Telegram — joined chat (bot)" },
+  { value: "telegram_boost", label: "Telegram — channel boost (bot)" },
+  { value: "github_star", label: "GitHub — starred repo (OAuth)" },
+  { value: "github_fork", label: "GitHub — forked repo (OAuth)" },
+  { value: "account_link", label: "Linked account (manual providers)" },
+];
+
+function verificationTargetHint(type: string): string {
+  if (type.startsWith("telegram_")) return "@channel or -100… chat id (bot must be admin)";
+  if (type.startsWith("github_")) return "owner/repo (e.g. octocat/hello-world)";
+  if (type === "account_link") return "Provider: x, youtube, tiktok, reddit…";
+  return "Target";
+}
 
 function toForm(task: MccTask): TaskForm {
   return {
@@ -46,6 +67,8 @@ function toForm(task: MccTask): TaskForm {
     margin_usdt: String(task.margin_usdt ?? 0),
     duration_seconds: String(task.duration_seconds ?? 0),
     max_completions: String(task.max_completions ?? 0),
+    verification_type: task.verification_type?.trim() || "none",
+    verification_target: task.verification_target ?? "",
     is_active: Boolean(task.is_active),
   };
 }
@@ -85,6 +108,10 @@ export function TasksPanel({
         margin_usdt: Number(form.margin_usdt) || 0,
         duration_seconds: Number(form.duration_seconds) || 0,
         max_completions: Number(form.max_completions) || 0,
+        // "none" clears the field (the RPC coalesces null → keeps the old value).
+        verification_type: form.verification_type.trim() || "none",
+        verification_target:
+          form.verification_type === "none" ? null : form.verification_target.trim() || null,
         is_active: form.is_active,
       }),
     });
@@ -132,6 +159,25 @@ export function TasksPanel({
           <input className={field} inputMode="decimal" placeholder="Margin USDT (sponsor profit)" value={form.margin_usdt} onChange={(e) => set("margin_usdt", e.target.value)} />
           <input className={field} inputMode="numeric" placeholder="Duration seconds (anti-cheat)" value={form.duration_seconds} onChange={(e) => set("duration_seconds", e.target.value)} />
           <input className={field} inputMode="numeric" placeholder="Max completions (0 = unlimited)" value={form.max_completions} onChange={(e) => set("max_completions", e.target.value)} />
+          <select
+            className={field}
+            value={form.verification_type}
+            onChange={(e) => set("verification_type", e.target.value)}
+          >
+            {VERIFICATION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value} className="bg-mcc-surface text-mcc-text">
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          {form.verification_type !== "none" && (
+            <input
+              className={field}
+              placeholder={verificationTargetHint(form.verification_type)}
+              value={form.verification_target}
+              onChange={(e) => set("verification_target", e.target.value)}
+            />
+          )}
           <label className="flex items-center gap-2 text-xs text-mcc-muted">
             <input
               type="checkbox"
@@ -197,7 +243,12 @@ export function TasksPanel({
               >
                 <td className="px-4 py-3">
                   <p className="max-w-[320px] truncate text-sm font-medium text-mcc-text">{t.title}</p>
-                  <p className="mt-0.5 text-[11px] text-mcc-dim">{t.platform}</p>
+                  <p className="mt-0.5 text-[11px] text-mcc-dim">
+                    {t.platform}
+                    {t.verification_type && t.verification_type !== "none"
+                      ? ` · ${t.verification_type}`
+                      : ""}
+                  </p>
                 </td>
                 <td className="px-4 py-3 text-right text-xs tabular-nums text-mcc-text">
                   {formatCoins(t.reward_coins)} coins
