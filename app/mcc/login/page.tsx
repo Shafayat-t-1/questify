@@ -45,15 +45,15 @@ export default async function MccLoginPage({
   const botDeepLink = `https://t.me/${config.botUsername}`;
 
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center gap-8 px-4 py-10">
-      <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-xl">
-        <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-neon-orange/25 to-neon-cyan/15 text-xl">
+    <div className="mcc-shell flex min-h-dvh flex-col items-center justify-center gap-8 bg-mcc-bg px-4 py-10">
+      <div className="w-full max-w-sm rounded-xl border border-mcc-line bg-mcc-surface p-6">
+        <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl border border-mcc-gold/40 bg-mcc-gold/15 text-xl">
           🎮
         </div>
-        <h1 className="mt-4 text-center text-lg font-bold tracking-tight text-white">
+        <h1 className="mt-4 text-center text-lg font-bold tracking-tight text-mcc-text">
           {config.brandName} · Master Control Center
         </h1>
-        <p className="mt-1.5 text-center text-xs text-white/45">
+        <p className="mt-1.5 text-center text-xs text-mcc-muted">
           Operator access only. Sign-in is bot-issued — a link is only ever sent to a
           Telegram account with admin rights.
         </p>
@@ -61,15 +61,15 @@ export default async function MccLoginPage({
         {magicError && (
           <div
             role="alert"
-            className="mt-5 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200"
+            className="mt-5 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200"
           >
             {magicError}
           </div>
         )}
 
-        <ol className="mt-5 space-y-3 text-left text-xs leading-relaxed text-white/70">
+        <ol className="mt-5 space-y-3 text-left text-xs leading-relaxed text-mcc-muted">
           <li className="flex gap-2.5">
-            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-neon-orange/20 font-mono text-[10px] font-bold text-neon-orange">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-mcc-gold/15 font-mono text-[10px] font-bold text-mcc-gold-bright">
               1
             </span>
             <span>
@@ -78,15 +78,15 @@ export default async function MccLoginPage({
                 href={botDeepLink}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-medium text-neon-cyan underline underline-offset-2"
+                className="font-medium text-mcc-teal underline underline-offset-2"
               >
                 @{config.botUsername}
               </a>{" "}
-              and send <span className="font-mono text-white">/login</span>.
+              and send <span className="font-mono text-mcc-text">/login</span>.
             </span>
           </li>
           <li className="flex gap-2.5">
-            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-neon-orange/20 font-mono text-[10px] font-bold text-neon-orange">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-mcc-gold/15 font-mono text-[10px] font-bold text-mcc-gold-bright">
               2
             </span>
             <span>
@@ -95,14 +95,14 @@ export default async function MccLoginPage({
             </span>
           </li>
           <li className="flex gap-2.5">
-            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-neon-orange/20 font-mono text-[10px] font-bold text-neon-orange">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-mcc-gold/15 font-mono text-[10px] font-bold text-mcc-gold-bright">
               3
             </span>
             <span>Tap the link — the dashboard opens already signed in.</span>
           </li>
         </ol>
 
-        <p className="mt-5 text-center text-[10px] leading-relaxed text-white/35">
+        <p className="mt-5 text-center text-[10px] leading-relaxed text-mcc-dim">
           No link arrives? That account has no admin rights — the bot replies to everyone
           else with nothing.
         </p>
@@ -110,11 +110,11 @@ export default async function MccLoginPage({
 
       <div className="w-full max-w-sm">
         <div className="mb-3 flex items-center gap-3">
-          <span className="h-px flex-1 bg-white/10" />
-          <span className="text-[10px] uppercase tracking-wider text-white/35">
+          <span className="h-px flex-1 bg-mcc-line" />
+          <span className="text-[10px] uppercase tracking-wider text-mcc-dim">
             secondary option
           </span>
-          <span className="h-px flex-1 bg-white/10" />
+          <span className="h-px flex-1 bg-mcc-line" />
         </div>
         <LoginWidget botUsername={config.botUsername} brandName={config.brandName} />
       </div>
