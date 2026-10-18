@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { loadMccAdminProfile, verifyMccToken } from "@/lib/mcc-auth";
 import { MCC_SESSION_COOKIE } from "@/lib/session";
-import { MccHeader } from "@/components/mcc/MccHeader";
+import { MccIdentityProvider } from "@/components/mcc/MccIdentity";
 
 export const metadata = {
   title: "Questify · Master Control Center",
@@ -25,9 +25,14 @@ export default async function MccPanelLayout({ children }: { children: React.Rea
   if (!context) redirect("/mcc/login");
 
   return (
-    <div className="min-h-dvh">
-      <MccHeader username={context.username} telegramId={context.telegramId} isFounder={context.isFounder} />
-      <main className="mx-auto w-full max-w-6xl px-4 pb-16 pt-4 sm:px-6">{children}</main>
-    </div>
+    <MccIdentityProvider
+      value={{
+        username: context.username,
+        telegramId: context.telegramId,
+        isFounder: context.isFounder,
+      }}
+    >
+      {children}
+    </MccIdentityProvider>
   );
 }

@@ -78,31 +78,31 @@ export function LoginWidget({ botUsername, brandName }: LoginWidgetProps) {
   }, [botUsername]);
 
   return (
-    <div className="mx-auto w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.03] p-6 text-center backdrop-blur-xl">
-      <h1 className="text-sm font-bold tracking-tight text-white">
+    <div className="mx-auto w-full max-w-sm rounded-xl border border-mcc-line bg-mcc-surface p-6 text-center">
+      <h1 className="text-sm font-bold tracking-tight text-mcc-text">
         {brandName} · sign in with the Telegram widget
       </h1>
-      <p className="mt-1.5 text-xs text-white/45">
+      <p className="mt-1.5 text-xs text-mcc-muted">
         Uses Telegram&apos;s own sign-in widget (oauth.telegram.org). The bot domain must be
-        linked via <span className="font-mono text-white/60">/setdomain</span> in @BotFather.
+        linked via <span className="font-mono text-mcc-text">/setdomain</span> in @BotFather.
       </p>
 
       <div className="mt-5 flex min-h-48 items-center justify-center">
         {busy ? (
-          <Loader2 className="h-6 w-6 animate-spin text-neon-orange" />
+          <Loader2 className="h-6 w-6 animate-spin text-mcc-gold" />
         ) : (
           <div ref={containerRef} className="[&_iframe]:mx-auto" />
         )}
       </div>
 
       {error && (
-        <div className="mt-4 flex items-start gap-2 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-left text-xs text-red-200">
+        <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-left text-xs text-red-200">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
-      <p className="mt-5 text-[10px] leading-relaxed text-white/35">
+      <p className="mt-5 text-[10px] leading-relaxed text-mcc-dim">
         Sessions are issued only to profiles with admin rights. The widget proves the
         account is who it claims to be; the server decides whether it may enter.
       </p>

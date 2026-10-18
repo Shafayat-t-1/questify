@@ -7,6 +7,23 @@
   --color-neon-orange: #ff6b00;
   --color-neon-cyan: #00f0ff;
 
+  /* MCC (Master Control Center) palette — deep charcoal/slate base with a
+     refined gold primary and a cool teal secondary, visually distinct from
+     the consumer Mini App's orange-on-obsidian look. */
+  --color-mcc-bg: #151a21;
+  --color-mcc-sidebar: #11151c;
+  --color-mcc-surface: #1b212b;
+  --color-mcc-surface-2: #222a37;
+  --color-mcc-inset: #10141a;
+  --color-mcc-line: #2a323f;
+  --color-mcc-line-strong: #3a4454;
+  --color-mcc-text: #e9edf4;
+  --color-mcc-muted: #9aa5b8;
+  --color-mcc-dim: #838fa4;
+  --color-mcc-gold: #d9a441;
+  --color-mcc-gold-bright: #f2c567;
+  --color-mcc-teal: #3cc7b4;
+
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 
@@ -95,4 +112,40 @@ body {
 
 ::selection {
   background: rgba(255, 107, 0, 0.35);
+}
+
+/* MCC shell: dark-only surface with gold selection and slim dark scrollbars
+   (scoped to the control room so the consumer Mini App is untouched). */
+.mcc-shell {
+  color-scheme: dark;
+}
+
+.mcc-shell ::selection {
+  background: rgba(217, 164, 65, 0.35);
+}
+
+.mcc-shell * {
+  scrollbar-width: thin;
+  scrollbar-color: #3a4454 transparent;
+}
+
+.mcc-shell *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.mcc-shell *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mcc-shell *::-webkit-scrollbar-thumb {
+  background: #3a4454;
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.mcc-shell *::-webkit-scrollbar-thumb:hover {
+  background: #4a5568;
+  background-clip: padding-box;
 }
