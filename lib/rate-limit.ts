@@ -18,6 +18,7 @@ export const RATE_LIMIT_ACTIONS = [
   "checkin",
   "withdraw",
   "accounts",
+  "oauth",
   "broadcast",
   "notify",
   "referral",

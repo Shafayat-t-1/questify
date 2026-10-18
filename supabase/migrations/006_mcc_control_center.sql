@@ -488,11 +488,13 @@ create policy mcc_live_ticks_read on public.mcc_live_ticks for select
   to anon, authenticated using (true);
 -- No insert/update/delete policy: only SECURITY DEFINER triggers write here.
 
-create or replace function public.mcc_touch_tick(p_source text)
+-- Trigger functions take ZERO SQL parameters (Postgres 42P13). The source label
+-- is passed as a trigger argument and read via TG_ARGV[0].
+create or replace function public.mcc_touch_tick()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
   insert into public.mcc_live_ticks (source, at)
-  values (p_source, now())
+  values (tg_argv[0], now())
   on conflict (source) do update set at = excluded.at;
   return new;
 end;

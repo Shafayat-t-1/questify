@@ -91,6 +91,7 @@ export const SETTINGS_DEFAULTS: Settings = {
     checkin: { max: 5, window_seconds: 60 },
     withdraw: { max: 5, window_seconds: 300 },
     accounts: { max: 20, window_seconds: 60 },
+    oauth: { max: 10, window_seconds: 60 },
     broadcast: { max: 3, window_seconds: 60 },
     notify: { max: 60, window_seconds: 60 },
     referral: { max: 30, window_seconds: 60 },
